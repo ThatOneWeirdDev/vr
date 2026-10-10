@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-mode="window">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -138,7 +138,8 @@ h2 {
   gap: 14px;
 }
 
-.tabs {
+.tabs,
+.seg {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px;
@@ -148,7 +149,8 @@ h2 {
   background: var(--panel);
 }
 
-.tabs button {
+.tabs button,
+.seg button {
   padding: 11px 8px;
   border: 0;
   border-radius: 8px;
@@ -159,7 +161,8 @@ h2 {
   line-height: 1.2;
 }
 
-.tabs button[aria-selected="true"] {
+.tabs button[aria-selected="true"],
+.seg button[aria-pressed="true"] {
   background: var(--panel-2);
   color: var(--text);
   box-shadow: inset 0 0 0 1px var(--line);
@@ -299,10 +302,14 @@ input[type="url"]:focus-visible {
   transform: rotate(10deg);
 }
 
+[data-mode="window"] .only-lens,
+[data-mode="lens"] .only-window {
+  display: none !important;
+}
+
 .lenses {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  justify-items: center;
+  display: flex;
+  justify-content: space-around;
   font: 900 1.0625rem/1 var(--display);
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -370,6 +377,12 @@ input[type="url"]:focus-visible {
   margin-left: -1px;
   background: #000;
   pointer-events: none;
+}
+
+[data-mode="window"] .stage::after,
+[data-mode="window"] .eye + .eye,
+[data-mode="window"] .vignette {
+  display: none;
 }
 
 body.vr .stage {
@@ -465,13 +478,16 @@ body.vr .stage {
 
 .hud {
   position: absolute;
-  left: 50%;
-  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  left: calc(10px + var(--safe-x));
   z-index: 3;
   display: none;
-  flex-direction: column;
-  gap: 10px;
-  transform: translateX(-50%);
+  gap: 8px;
+  transition: opacity 0.4s;
+}
+
+.hud.idle {
+  opacity: 0.2;
 }
 
 body.vr .hud {
@@ -688,8 +704,14 @@ input[type="range"]:disabled {
   gap: 4px 12px;
 }
 
-.setting label {
+.setting label,
+.setting-name {
   font-weight: 700;
+}
+
+.setting .seg {
+  grid-column: 1 / -1;
+  margin-top: 4px;
 }
 
 .setting output {
@@ -885,7 +907,7 @@ input[type="range"]:disabled {
 
 <header class="brand">
 <h1 class="wordmark">Stere<span class="lens-l">o</span>sc<span class="lens-r">o</span>pe</h1>
-<p class="tagline">Turn any video into a phone headset. It zooms in, splits the picture for each eye, and follows your head as you look around.</p>
+<p class="tagline">Turn any video into a giant screen that stays put while you look around it. Your phone tracks your head and moves the picture to match.</p>
 </header>
 
 <section class="source" aria-labelledby="source-h">
@@ -914,7 +936,7 @@ input[type="range"]:disabled {
 
 <section class="preview" aria-label="Preview">
 <div class="card">
-<div class="lenses" aria-hidden="true"><span><i class="dot dot-l"></i>Left eye</span><span><i class="dot dot-r"></i>Right eye</span></div>
+<div class="lenses" aria-hidden="true"><span class="only-window"><i class="dot dot-l"></i><i class="dot dot-r"></i>Both eyes</span><span class="only-lens"><i class="dot dot-l"></i>Left eye</span><span class="only-lens"><i class="dot dot-r"></i>Right eye</span></div>
 <div class="stage-slot">
 <div class="stage" id="stage">
 <div class="eye"><div class="view"><div class="screen"></div><div class="vignette"></div><div class="eye-msg"></div></div></div>
@@ -948,18 +970,26 @@ input[type="range"]:disabled {
 <section class="settings" aria-labelledby="fit-h">
 <h2 id="fit-h">Fit</h2>
 <div class="setting">
+<span class="setting-name" id="mode-label">View</span>
+<div class="seg" role="group" aria-labelledby="mode-label">
+<button type="button" id="mode-window" aria-pressed="true">Full screen</button>
+<button type="button" id="mode-lens" aria-pressed="false">Split for lenses</button>
+</div>
+<p class="hint">No lenses? Use full screen. A split view only works inside a lens viewer like Cardboard. Without lenses your eyes would have to aim far away while focusing a few centimetres away, which blurs and strains them.</p>
+</div>
+<div class="setting">
 <label for="zoom">Zoom</label>
 <output id="zoom-out" for="zoom">1.25×</output>
 <input id="zoom" type="range" min="1" max="2.5" step="0.05" value="1.25">
 <p class="hint">How much bigger than your view the video is. More zoom gives you more to look around.</p>
 </div>
-<div class="setting">
-<label for="speed">Look speed</label>
-<output id="speed-out" for="speed">1.00×</output>
-<input id="speed" type="range" min="0.5" max="2" step="0.05" value="1">
-<p class="hint">How far the picture turns when you turn your head. 1× matches real life.</p>
+<div class="setting only-window">
+<label for="distance">Phone distance</label>
+<output id="distance-out" for="distance">12 cm</output>
+<input id="distance" type="range" min="6" max="40" step="1" value="12">
+<p class="hint">How far the screen sits from your eyes. Set it right and a 30° head turn moves the picture exactly 30°. Closer than your eyes can focus looks blurry: about 7 cm for most kids and teens, further for adults.</p>
 </div>
-<div class="setting">
+<div class="setting only-lens">
 <label for="spacing">Eye spacing</label>
 <output id="spacing-out" for="spacing">0%</output>
 <input id="spacing" type="range" min="-15" max="15" step="1" value="0">
@@ -968,7 +998,7 @@ input[type="range"]:disabled {
 <div class="switches">
 <label class="switch" for="level"><span><b>Keep the horizon level</b><small>The picture tilts back when you tilt your head.</small></span><input id="level" type="checkbox" checked></label>
 <label class="switch" for="clamp"><span><b>Stop at the edges</b><small>Never turn past the edge of the video.</small></span><input id="clamp" type="checkbox"></label>
-<label class="switch" for="vignette"><span><b>Lens edges</b><small>Darkens the corners like real VR lenses.</small></span><input id="vignette" type="checkbox" checked></label>
+<label class="switch only-lens" for="vignette"><span><b>Lens edges</b><small>Darkens the corners like real VR lenses.</small></span><input id="vignette" type="checkbox" checked></label>
 </div>
 </section>
 
@@ -980,17 +1010,17 @@ input[type="range"]:disabled {
 <section class="tips" aria-labelledby="tips-h">
 <h2 id="tips-h">Wearing it</h2>
 <ol class="steps">
-<li>Load a video and set the zoom. More zoom means more of the video sits outside your view, waiting for you to turn toward it.</li>
-<li>Tap Start VR and turn your phone sideways. On iPhone, tap Allow when it asks about motion.</li>
-<li>Hold the phone right in front of your eyes and look straight ahead while it counts down from 3.</li>
-<li>Strap or tape it on. A headband with the phone tucked under it works too.</li>
+<li>Load a video. Set the phone distance to how far the screen will sit from your eyes.</li>
+<li>Tap Start VR. On iPhone, tap Allow when it asks about motion.</li>
+<li>Hold the phone at that distance and look straight ahead while it counts down from 3.</li>
+<li>To wear it, fix it to a cap brim or headband so the screen stays at that distance, facing you.</li>
 </ol>
 <dl class="gestures">
 <dt>Tap</dt><dd>Recenter the view</dd>
 <dt>Double-tap</dt><dd>Play or pause</dd>
 <dt>Hold 1 second</dt><dd>Leave VR</dd>
 </dl>
-<p class="fine">Eyes can't focus on a screen a few centimetres away, so it will look soft without lenses. A cardboard VR viewer with lenses makes it sharp. On iPhone, Share → Add to Home Screen hides Safari's bars.</p>
+<p class="fine">Got a Cardboard-style viewer with lenses? Switch the view to Split for lenses and tape it right up to your face. On iPhone, Share → Add to Home Screen hides Safari's bars.</p>
 </section>
 
 </main>
@@ -1000,7 +1030,13 @@ input[type="range"]:disabled {
 
   const D2R = Math.PI / 180;
   const R2D = 180 / Math.PI;
-  const FOV = 80;
+  const LENS_FOV = 80;
+  const PX_MM = 25.4 / 160;
+  const NECK_UP = 0.075;
+  const NECK_FWD = 0.08;
+  const IPD = 0.063;
+  const SCREEN_DIST = 4;
+  const PREDICT = 0.025;
   const STORE = 'stereoscope.settings.v1';
   const ICON = {
     play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.2v13.6L18.8 12z" fill="currentColor"/></svg>',
@@ -1026,6 +1062,11 @@ input[type="range"]:disabled {
     sourceName: $('#source-name'),
     recenter: $('#recenter'),
     start: $('#start'),
+    hud: $('.hud'),
+    zoomOut: $('#zoom-out'),
+    distanceOut: $('#distance-out'),
+    modeWindow: $('#mode-window'),
+    modeLens: $('#mode-lens'),
     hudExit: $('#hud-exit'),
     hudPlay: $('#hud-play'),
     hudCenter: $('#hud-center'),
@@ -1040,7 +1081,7 @@ input[type="range"]:disabled {
     env: $('#env-warn')
   };
 
-  const settings = { zoom: 1.25, speed: 1, spacing: 0, level: true, clamp: false, vignette: true };
+  const settings = { mode: 'window', zoom: 1.25, distance: 12, spacing: 0, level: true, clamp: false, vignette: true };
   try {
     const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
     if (saved && typeof saved === 'object') {
@@ -1049,6 +1090,7 @@ input[type="range"]:disabled {
       }
     }
   } catch (e) {}
+  if (settings.mode !== 'lens') settings.mode = 'window';
   const saveSettings = () => {
     try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) {}
   };
@@ -1061,13 +1103,14 @@ input[type="range"]:disabled {
     wake: null,
     countdown: null,
     sensorCheck: null,
-    msgTimer: null
+    msgTimer: null,
+    hudTimer: null
   };
 
   let source = null;
   let mirror = null;
   let mirrorCtx = null;
-  let lay = { eyeW: 1, eyeH: 1, sw: 1, sh: 1, P: 1, maxYaw: 0, maxPitch: 0 };
+  let lay = { eyeW: 1, eyeH: 1, sw: 1, sh: 1, P: 1, fov: LENS_FOV, maxYaw: 0, maxPitch: 0 };
   let lastTransform = '';
   let lastReadout = 0;
   let scrubbing = false;
@@ -1103,15 +1146,15 @@ input[type="range"]:disabled {
     return out;
   }
 
-  function qNlerp(a, b, t) {
-    const sign = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0 ? -1 : 1;
-    a.x += (sign * b.x - a.x) * t;
-    a.y += (sign * b.y - a.y) * t;
-    a.z += (sign * b.z - a.z) * t;
-    a.w += (sign * b.w - a.w) * t;
-    const n = Math.hypot(a.x, a.y, a.z, a.w) || 1;
-    a.x /= n; a.y /= n; a.z /= n; a.w /= n;
-    return a;
+  function qFromRotVec(vx, vy, vz, out) {
+    const angle = Math.hypot(vx, vy, vz);
+    if (angle < 1e-9) {
+      out.x = 0; out.y = 0; out.z = 0; out.w = 1;
+      return out;
+    }
+    const s = Math.sin(angle / 2) / angle;
+    out.x = vx * s; out.y = vy * s; out.z = vz * s; out.w = Math.cos(angle / 2);
+    return out;
   }
 
   function eulerYXZ(q) {
@@ -1146,10 +1189,16 @@ input[type="range"]:disabled {
   const motion = {
     has: false,
     qDev: quat(),
-    qSmooth: quat(),
+    qNew: quat(),
+    qPred: quat(),
     qRef: quat(),
     qRel: quat(),
+    dq: quat(),
+    delta: quat(),
     tmp: quat(),
+    tmp2: quat(),
+    w: [0, 0, 0],
+    tEvent: 0,
     dragYaw: 0,
     dragPitch: 0,
     yaw: 0,
@@ -1165,10 +1214,33 @@ input[type="range"]:disabled {
 
   function onOrientation(e) {
     if (e.alpha == null && e.beta == null && e.gamma == null) return;
-    deviceQuat((e.alpha || 0) * D2R, (e.beta || 0) * D2R, (e.gamma || 0) * D2R, screenAngle() * D2R, motion.qDev);
+    const now = performance.now();
+    deviceQuat((e.alpha || 0) * D2R, (e.beta || 0) * D2R, (e.gamma || 0) * D2R, screenAngle() * D2R, motion.qNew);
+    const w = motion.w;
+    if (motion.has) {
+      const dt = (now - motion.tEvent) / 1000;
+      if (dt > 0.004 && dt < 0.1) {
+        const d = qMul(motion.qNew, qConj(motion.qDev, motion.tmp2), motion.dq);
+        const sgn = d.w < 0 ? -1 : 1;
+        const s = Math.hypot(d.x, d.y, d.z);
+        const k = s > 1e-9 ? (sgn * 2 * Math.atan2(s, sgn * d.w)) / s / dt : 0;
+        let wx = d.x * k;
+        let wy = d.y * k;
+        let wz = d.z * k;
+        if (Math.hypot(wx, wy, wz) > 20) {
+          wx = 0; wy = 0; wz = 0;
+        }
+        w[0] += (wx - w[0]) * 0.5;
+        w[1] += (wy - w[1]) * 0.5;
+        w[2] += (wz - w[2]) * 0.5;
+      } else if (dt >= 0.1) {
+        w[0] = 0; w[1] = 0; w[2] = 0;
+      }
+    }
+    qCopy(motion.qNew, motion.qDev);
+    motion.tEvent = now;
     if (!motion.has) {
       motion.has = true;
-      qCopy(motion.qDev, motion.qSmooth);
       recenter();
     }
   }
@@ -1177,7 +1249,7 @@ input[type="range"]:disabled {
     motion.dragYaw = 0;
     motion.dragPitch = 0;
     if (!motion.has) return;
-    const e = eulerYXZ(motion.qSmooth);
+    const e = eulerYXZ(motion.qDev);
     const qy = quat(0, Math.sin(e.yaw / 2), 0, Math.cos(e.yaw / 2));
     const qx = quat(Math.sin(e.pitch / 2), 0, 0, Math.cos(e.pitch / 2));
     qMul(qy, qx, motion.qRef);
@@ -1194,11 +1266,18 @@ input[type="range"]:disabled {
     let pitch;
     let roll;
     if (state.listening && motion.has) {
-      qNlerp(motion.qSmooth, motion.qDev, 0.5);
-      qMul(qConj(motion.qRef, motion.tmp), motion.qSmooth, motion.qRel);
+      let q = motion.qDev;
+      const w = motion.w;
+      const gain = clamp((Math.hypot(w[0], w[1], w[2]) - 0.15) / 0.6, 0, 1);
+      if (gain > 0) {
+        const lead = Math.min(0.04, (now - motion.tEvent) / 1000 + PREDICT) * gain;
+        qFromRotVec(w[0] * lead, w[1] * lead, w[2] * lead, motion.delta);
+        q = qMul(motion.delta, motion.qDev, motion.qPred);
+      }
+      qMul(qConj(motion.qRef, motion.tmp), q, motion.qRel);
       const e = eulerYXZ(motion.qRel);
-      yaw = e.yaw * R2D * settings.speed;
-      pitch = e.pitch * R2D * settings.speed;
+      yaw = e.yaw * R2D;
+      pitch = e.pitch * R2D;
       roll = settings.level ? e.roll * R2D : 0;
     } else {
       yaw = motion.dragYaw;
@@ -1212,12 +1291,35 @@ input[type="range"]:disabled {
     motion.yaw = yaw;
     motion.pitch = pitch;
     motion.roll = roll;
+    const lens = settings.mode === 'lens';
     const P = lay.P.toFixed(1);
-    const t = `translateZ(${P}px) rotateZ(${roll.toFixed(2)}deg) rotateX(${pitch.toFixed(2)}deg) rotateY(${(-yaw).toFixed(2)}deg) translateZ(-${P}px)`;
-    if (t !== lastTransform) {
-      lastTransform = t;
-      els.eyes[0].screen.style.transform = t;
-      els.eyes[1].screen.style.transform = t;
+    const k = lay.P / SCREEN_DIST;
+    const yr = yaw * D2R;
+    const pr = pitch * D2R;
+    const rr = roll * D2R;
+    const cy = Math.cos(yr), sy = Math.sin(yr);
+    const cp = Math.cos(pr), sp = Math.sin(pr);
+    const cr = Math.cos(rr), sr = Math.sin(rr);
+    const rot = `rotateZ(${roll.toFixed(2)}deg) rotateX(${pitch.toFixed(2)}deg) rotateY(${(-yaw).toFixed(2)}deg)`;
+    const eyeTransform = dx => {
+      const x1 = dx * cr - NECK_UP * sr;
+      const y1 = dx * sr + NECK_UP * cr;
+      const z1 = -NECK_FWD;
+      const y2 = y1 * cp - z1 * sp;
+      const z2 = y1 * sp + z1 * cp;
+      const x3 = x1 * cy + z2 * sy;
+      const z3 = -x1 * sy + z2 * cy;
+      const tx = -x3 * k;
+      const ty = (y2 - NECK_UP) * k;
+      const tz = -(z3 + NECK_FWD) * k;
+      return `translateZ(${P}px) ${rot} translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, ${tz.toFixed(2)}px) translateZ(-${P}px)`;
+    };
+    const tl = eyeTransform(lens ? -IPD / 2 : 0);
+    const tr = lens ? eyeTransform(IPD / 2) : tl;
+    if (tl + tr !== lastTransform) {
+      lastTransform = tl + tr;
+      els.eyes[0].screen.style.transform = tl;
+      els.eyes[1].screen.style.transform = tr;
     }
     if (now - lastReadout > 80) {
       lastReadout = now;
@@ -1241,7 +1343,13 @@ input[type="range"]:disabled {
     }
     sw *= settings.zoom;
     sh *= settings.zoom;
-    const P = eyeW / 2 / Math.tan((FOV / 2) * D2R);
+    const lens = settings.mode === 'lens';
+    let fov = LENS_FOV;
+    if (!lens) {
+      const widthPx = state.vr ? eyeW : Math.max(screen.width || 0, screen.height || 0) || eyeW;
+      fov = clamp(2 * Math.atan((widthPx * PX_MM) / 2 / (settings.distance * 10)) * R2D, 20, 150);
+    }
+    const P = eyeW / 2 / Math.tan((fov / 2) * D2R);
     const halfV = Math.atan(eyeH / 2 / P) * R2D;
     lay = {
       eyeW,
@@ -1249,20 +1357,23 @@ input[type="range"]:disabled {
       sw,
       sh,
       P,
-      maxYaw: Math.max(0, Math.atan(sw / 2 / P) * R2D - FOV / 2),
+      fov,
+      maxYaw: Math.max(0, Math.atan(sw / 2 / P) * R2D - fov / 2),
       maxPitch: Math.max(0, Math.atan(sh / 2 / P) * R2D - halfV)
     };
+    els.zoomOut.textContent = `${settings.zoom.toFixed(2)}× · ${Math.round(2 * Math.atan(sw / 2 / P) * R2D)}° wide`;
+    els.distanceOut.textContent = `${settings.distance} cm · ${Math.round(fov)}° view`;
     const st = els.stage.style;
     st.setProperty('--sw', sw.toFixed(2) + 'px');
     st.setProperty('--sh', sh.toFixed(2) + 'px');
     st.setProperty('--p', P.toFixed(2) + 'px');
-    const shift = (settings.spacing / 100) * eyeW;
+    const shift = lens ? (settings.spacing / 100) * eyeW : 0;
     els.eyes[0].view.style.transform = `translateX(${(-shift).toFixed(2)}px)`;
     els.eyes[1].view.style.transform = `translateX(${shift.toFixed(2)}px)`;
     els.stage.classList.toggle('flat', !settings.vignette);
     sizeMirror();
     lastTransform = '';
-    els.rotate.hidden = !(state.vr && coarse.matches && window.innerHeight > window.innerWidth);
+    els.rotate.hidden = !(state.vr && lens && coarse.matches && window.innerHeight > window.innerWidth);
   }
 
   function sizeMirror() {
@@ -1302,6 +1413,12 @@ input[type="range"]:disabled {
       e.msg.classList.toggle('on', !!text);
     });
     if (text && ms) state.msgTimer = setTimeout(() => say('', 0), ms);
+  }
+
+  function wakeHud() {
+    els.hud.classList.remove('idle');
+    clearTimeout(state.hudTimer);
+    state.hudTimer = setTimeout(() => els.hud.classList.add('idle'), 3000);
   }
 
   function pad2(n) {
@@ -1604,20 +1721,22 @@ input[type="range"]:disabled {
   }
 
   function makeYouTubeSource(info) {
+    const count = settings.mode === 'lens' ? 2 : 1;
     const src = {
       kind: 'yt',
+      info,
       label: 'YouTube video',
       aspect: info.vertical ? 9 / 16 : 16 / 9,
       width: 0,
-      players: [null, null],
-      ready: [false, false],
+      players: [],
+      ready: new Array(count).fill(false),
       want: false,
       muted: false,
       errored: false,
       check: null,
       sync: null
     };
-    const live = () => source === src && src.ready[0] && src.ready[1];
+    const live = () => source === src && src.ready.every(Boolean);
 
     function onBothReady() {
       try {
@@ -1637,12 +1756,12 @@ input[type="range"]:disabled {
       const [m, f] = src.players;
       if (i === 0) {
         if (s === 1) {
-          f.playVideo();
+          if (f) f.playVideo();
           syncPlayers();
         } else if (s === 2 || s === 3) {
-          f.pauseVideo();
+          if (f) f.pauseVideo();
         } else if (s === 0) {
-          f.pauseVideo();
+          if (f) f.pauseVideo();
           src.want = false;
         }
         updateUI();
@@ -1654,6 +1773,7 @@ input[type="range"]:disabled {
     function syncPlayers() {
       if (!live()) return;
       const [m, f] = src.players;
+      if (!f) return;
       const ms = m.getPlayerState();
       const fs = f.getPlayerState();
       if (ms === 1) {
@@ -1679,7 +1799,7 @@ input[type="range"]:disabled {
     }
 
     src.mount = (left, right) => {
-      [left, right].forEach((scr, i) => {
+      [left, right].slice(0, count).forEach((scr, i) => {
         const holder = document.createElement('div');
         scr.appendChild(holder);
         const vars = {
@@ -1720,7 +1840,7 @@ input[type="range"]:disabled {
       const [m, f] = src.players;
       if (!src.muted) m.unMute();
       m.playVideo();
-      f.playVideo();
+      if (f) f.playVideo();
       clearTimeout(src.check);
       src.check = setTimeout(() => {
         if (!live() || !src.want) return;
@@ -1729,7 +1849,7 @@ input[type="range"]:disabled {
           m.mute();
           src.muted = true;
           m.playVideo();
-          f.playVideo();
+          if (f) f.playVideo();
           say('Started muted.\nTap for sound.', 2600);
         }
       }, 1800);
@@ -1738,8 +1858,7 @@ input[type="range"]:disabled {
       src.want = false;
       clearTimeout(src.check);
       if (!live()) return;
-      src.players[0].pauseVideo();
-      src.players[1].pauseVideo();
+      src.players.forEach(p => p.pauseVideo());
     };
     src.isPlaying = () => {
       if (!live()) return src.want;
@@ -1757,8 +1876,7 @@ input[type="range"]:disabled {
     src.duration = () => (live() ? src.players[0].getDuration() || 0 : 0);
     src.seek = t => {
       if (!live()) return;
-      src.players[0].seekTo(t, true);
-      src.players[1].seekTo(t, true);
+      src.players.forEach(p => p.seekTo(t, true));
     };
     src.destroy = () => {
       clearInterval(src.sync);
@@ -1892,8 +2010,9 @@ input[type="range"]:disabled {
     motion.dragPitch = 0;
     layout();
     lockWake();
+    wakeHud();
     fs.then(() => {
-      if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {});
+      if (settings.mode === 'lens' && screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {});
     }).catch(() => {});
     Promise.resolve(perm).catch(() => 'denied').then(p => {
       if (!state.vr) return;
@@ -1923,11 +2042,13 @@ input[type="range"]:disabled {
     state.countdown = null;
     clearTimeout(state.sensorCheck);
     clearTimeout(tapTimer);
+    clearTimeout(state.hudTimer);
     if (state.listening) {
       window.removeEventListener('deviceorientation', onOrientation);
       state.listening = false;
     }
     motion.has = false;
+    motion.w = [0, 0, 0];
     motion.dragYaw = 0;
     motion.dragPitch = 0;
     if (state.wake) {
@@ -1992,6 +2113,7 @@ input[type="range"]:disabled {
   }
 
   els.stage.addEventListener('pointerdown', e => {
+    if (state.vr) wakeHud();
     if (e.target.closest('.hud') || !els.rotate.hidden) return;
     if (gesture) return;
     try { els.stage.setPointerCapture(e.pointerId); } catch (err) {}
@@ -2015,7 +2137,7 @@ input[type="range"]:disabled {
       els.stage.classList.add('dragging');
     }
     if (gesture.moved && !(state.listening && motion.has)) {
-      const k = FOV / lay.eyeW;
+      const k = lay.fov / lay.eyeW;
       const ly = settings.clamp ? lay.maxYaw : 150;
       const lp = settings.clamp ? lay.maxPitch : 80;
       motion.dragYaw = clamp(motion.dragYaw + (e.clientX - gesture.lx) * k, -ly, ly);
@@ -2132,11 +2254,37 @@ input[type="range"]:disabled {
   }
 
   bindRange('zoom', 'zoom', v => v.toFixed(2) + '×');
-  bindRange('speed', 'speed', v => v.toFixed(2) + '×');
+  bindRange('distance', 'distance', v => v + ' cm');
   bindRange('spacing', 'spacing', v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v) + '%');
   bindToggle('level', 'level');
   bindToggle('clamp', 'clamp');
   bindToggle('vignette', 'vignette');
+
+  function applyMode() {
+    document.documentElement.dataset.mode = settings.mode;
+    els.modeWindow.setAttribute('aria-pressed', String(settings.mode === 'window'));
+    els.modeLens.setAttribute('aria-pressed', String(settings.mode === 'lens'));
+  }
+
+  function setMode(mode) {
+    if (settings.mode === mode) return;
+    settings.mode = mode;
+    saveSettings();
+    applyMode();
+    if (source && source.kind === 'yt') {
+      const at = Math.floor(source.time());
+      const want = source.want;
+      setSource(makeYouTubeSource(Object.assign({}, source.info, { start: at || source.info.start })));
+      if (want) source.play();
+    } else if (source) {
+      source.needsDraw = true;
+    }
+    layout();
+  }
+
+  els.modeWindow.addEventListener('click', () => setMode('window'));
+  els.modeLens.addEventListener('click', () => setMode('lens'));
+  applyMode();
 
   const warnings = [];
   if (!window.isSecureContext) {
@@ -2177,7 +2325,7 @@ input[type="range"]:disabled {
   setSource(makeDemo());
 
   function loop(now) {
-    if (source && source.tick && source.tick(now)) drawMirror();
+    if (source && source.tick && source.tick(now) && settings.mode === 'lens') drawMirror();
     updateView(now);
     requestAnimationFrame(loop);
   }
