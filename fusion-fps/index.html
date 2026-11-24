@@ -29,23 +29,20 @@ a#dl{display:none;text-align:center;text-decoration:none;color:#fff;background:#
 <select id="res"><option value="640">640 wide</option><option value="960" selected>960 wide</option><option value="1280">1280 wide</option></select>
 <select id="len"><option value="2">2 s takes</option><option value="3" selected>3 s takes</option><option value="4">4 s takes</option></select>
 <select id="target"></select>
+<select id="speed"><option value="slow" selected>Slow-mo</option><option value="real">Real time</option></select>
 </div>
 <button class="primary" id="start">Start camera</button>
-<button id="rec" disabled>Record take</button>
+<button class="primary" id="rec" disabled>Capture &amp; build</button>
 <div id="takes"></div>
-<div class="row">
-<button id="clear" disabled>Clear takes</button>
-<button class="primary" id="build" disabled>Build</button>
-</div>
 <progress id="prog" value="0" max="1" hidden></progress>
 <video id="out" controls playsinline loop hidden></video>
 <a id="dl">Download MP4</a>
-<div id="note">Film a repeating motion (spinning fan, pendulum, bouncing ball loop, metronome) from a fixed camera. Each take lands on a different sub-frame phase of the motion. Takes are aligned by image matching and interleaved into the target frame rate.</div>
+<div id="note">Film a repeating motion (spinning fan, pendulum, metronome) from a fixed camera. Capture records all needed takes back to back with random gaps, aligns them by image matching, and interleaves them into the target frame rate. Slow-mo plays the result at 30 fps.</div>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),targetSel=$('target'),resSel=$('res'),lenSel=$('len'),recBtn=$('rec'),takesEl=$('takes'),buildBtn=$('build'),clearBtn=$('clear'),prog=$('prog'),out=$('out'),dl=$('dl');
+const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),targetSel=$('target'),resSel=$('res'),lenSel=$('len'),recBtn=$('rec'),speedSel=$('speed'),takesEl=$('takes'),prog=$('prog'),out=$('out'),dl=$('dl');
 const GW=32,GH=18;
 const gc=document.createElement('canvas');gc.width=GW;gc.height=GH;
 const gx=gc.getContext('2d',{willReadFrequently:true});
@@ -101,9 +98,7 @@ async function openCamera(){
 
 function renderTakes(){
   const need=+targetSel.value/baseFps||2;
-  takesEl.textContent=takes.length?'Takes: '+takes.length+' (need '+need+' or more)\n'+takes.map((t,i)=>'Take '+(i+1)+': '+t.gray.length+' frames').join('\n'):'No takes yet. Need '+need+' or more.';
-  buildBtn.disabled=busy||takes.length<2;
-  clearBtn.disabled=busy||!takes.length;
+  takesEl.textContent=takes.length?'Takes: '+takes.length+'/'+need:'Needs '+need+' takes, recorded automatically.';
   recBtn.disabled=busy||!stream;
 }
 
@@ -194,14 +189,15 @@ async function build(){
     if(n<2)throw new Error('Takes do not overlap enough. Re-record with the same repeating motion.');
     const phases=offsets.map(o=>((o%1)+1)%1).map(p=>p.toFixed(2)).join(', ');
     const w=takes[0].w,h=takes[0].h;
-    const bitrate=Math.min(60e6,Math.round(w*h*target*0.08));
-    const cfg=await pickCodec(w,h,target,bitrate);
-    if(!cfg)throw new Error('This browser cannot encode H.264 at '+target+' fps. Try a lower target.');
+    const playFps=speedSel.value==='slow'?30:target;
+    const bitrate=Math.min(60e6,Math.round(w*h*Math.max(playFps,30)*0.1));
+    const cfg=await pickCodec(w,h,playFps,bitrate);
+    if(!cfg)throw new Error('This browser cannot encode H.264 at '+playFps+' fps. Try a lower target.');
     const muxer=new Mp4Muxer.Muxer({target:new Mp4Muxer.ArrayBufferTarget(),video:{codec:'avc',width:w,height:h},fastStart:'in-memory'});
     let encErr=null;
     const enc=new VideoEncoder({output:(c,m)=>muxer.addVideoChunk(c,m),error:e=>{encErr=e}});
     enc.configure(cfg);
-    statusEl.textContent='Phases: '+phases+'\nEncoding '+n+' frames at '+target+' fps...';
+    statusEl.textContent='Phases: '+phases+'\nEncoding '+n+' frames...';
     let last=null,dups=0;
     for(let i=0;i<n;i++){
       if(encErr)throw encErr;
@@ -209,8 +205,8 @@ async function build(){
       if(item===last)dups++;
       last=item;
       const bmp=await createImageBitmap(item.b);
-      const frame=new VideoFrame(bmp,{timestamp:Math.round(i*1e6/target),duration:Math.round(1e6/target)});
-      enc.encode(frame,{keyFrame:i%target===0});
+      const frame=new VideoFrame(bmp,{timestamp:Math.round(i*1e6/playFps),duration:Math.round(1e6/playFps)});
+      enc.encode(frame,{keyFrame:i%Math.round(playFps)===0});
       frame.close();bmp.close();
       while(enc.encodeQueueSize>16)await new Promise(r=>setTimeout(r,4));
       if(i%8===0){prog.value=i/n;await new Promise(r=>setTimeout(r,0))}
@@ -220,8 +216,8 @@ async function build(){
     const blob=new Blob([muxer.target.buffer],{type:'video/mp4'});
     const url=URL.createObjectURL(blob);
     out.src=url;out.hidden=false;
-    dl.href=url;dl.download='fusion_'+target+'fps.mp4';dl.style.display='block';
-    statusEl.textContent='Done: '+n+' frames at '+target+' fps ('+(n/target).toFixed(2)+' s).\nPhases: '+phases+'\nRepeated frames: '+dups+' ('+Math.round(100*dups/n)+'%). High means phases bunched up; record more takes.';
+    dl.href=url;dl.download='fusion_'+target+'fps'+(playFps===target?'':'_slowmo')+'.mp4';dl.style.display='block';
+    statusEl.textContent='Done: '+n+' frames captured at '+target+' fps, playing at '+playFps+' fps ('+(n/playFps).toFixed(2)+' s'+(playFps<target?', '+(target/playFps).toFixed(1)+'x slower':'')+').\nPhases: '+phases+'\nRepeated frames: '+dups+' ('+Math.round(100*dups/n)+'%). High means phases bunched up; record more takes.';
   }catch(e){
     statusEl.textContent='Error: '+(e.message||e);
   }
@@ -235,16 +231,17 @@ startBtn.onclick=async()=>{
 resSel.onchange=()=>{if(stream)startBtn.click()};
 targetSel.onchange=renderTakes;
 recBtn.onclick=async()=>{
-  busy=true;renderTakes();
-  statusEl.textContent='Recording...';
-  const t=await recordTake(+lenSel.value);
-  takes.push(t);
+  busy=true;takes=[];renderTakes();
+  const need=Math.round(+targetSel.value/baseFps);
+  for(let i=0;i<need;i++){
+    statusEl.textContent='Recording take '+(i+1)+' of '+need+'...';
+    takes.push(await recordTake(+lenSel.value));
+    renderTakes();
+    await new Promise(r=>setTimeout(r,150+Math.random()*450));
+  }
   busy=false;
-  statusEl.textContent='Take '+takes.length+' saved.';
-  renderTakes();
+  await build();
 };
-clearBtn.onclick=()=>{takes=[];renderTakes()};
-buildBtn.onclick=build;
 fillTargets();
 renderTakes();
 </script>
