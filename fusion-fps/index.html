@@ -15,8 +15,6 @@ button.primary{background:#2f6bff;border-color:#2f6bff;font-weight:600}
 button:disabled{opacity:.4}
 .row{display:flex;gap:8px;flex-wrap:wrap}
 .row>*{flex:1 1 90px}
-label.chk{display:flex;align-items:center;gap:10px;font-size:15px}
-label.chk input{width:20px;height:20px}
 #status,#note{font-size:14px;color:#a8a8b3;white-space:pre-line}
 progress{width:100%;height:10px}
 canvas{width:100%;background:#000;border-radius:12px}
@@ -40,18 +38,17 @@ a#dl{display:none;text-align:center;text-decoration:none;color:#fff;background:#
 <select id="lres" class="lv" hidden><option value="320">Live 320 wide</option><option value="480" selected>Live 480 wide</option><option value="640">Live 640 wide</option></select>
 <button id="fxbtn" class="lv" hidden>Effect: on</button>
 </div>
-<label class="chk off"><input type="checkbox" id="smart" checked>Subject-aware (recognize and move subjects)</label>
 <button class="primary" id="start">Start camera</button>
 <button id="rec" disabled>Capture &amp; build</button>
 <progress id="prog" value="0" max="1" hidden></progress>
 <video id="out" controls playsinline loop hidden></video>
 <a id="dl">Download MP4</a>
-<div id="note">Records one take, makes up to 32x more frames for smooth slow-mo (pick a high target with 60 fps playback), finds people, animals and vehicles with an on-device segmentation model, tracks each one's translation, scale and rotation between frames, and re-renders them at in-between moments over a clean background. A tripod or propped phone gives the cleanest result. The extra frames are synthesized, not captured. Real-time camera mode skips the subject model and runs plain interpolation live, about one frame behind.</div>
+<div id="note">Records one take and synthesizes up to 32x more frames with motion estimation for smooth slow-mo (pick a high target with 60 fps playback). Real-time camera mode runs the same effect live, about one frame behind. The extra frames are generated, not captured.</div>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),targetSel=$('target'),resSel=$('res'),lenSel=$('len'),speedSel=$('speed'),modeSel=$('mode'),livecv=$('livecv'),lslowSel=$('lslow'),lresSel=$('lres'),fxBtn=$('fxbtn'),smartChk=$('smart'),recBtn=$('rec'),prog=$('prog'),out=$('out'),dl=$('dl');
+const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),targetSel=$('target'),resSel=$('res'),lenSel=$('len'),speedSel=$('speed'),modeSel=$('mode'),livecv=$('livecv'),lslowSel=$('lslow'),lresSel=$('lres'),fxBtn=$('fxbtn'),recBtn=$('rec'),prog=$('prog'),out=$('out'),dl=$('dl');
 const fc=document.createElement('canvas');
 const fx=fc.getContext('2d');
 const wc=document.createElement('canvas');
@@ -59,11 +56,8 @@ const wx=wc.getContext('2d',{willReadFrequently:true});
 const oc=document.createElement('canvas');
 const ox=oc.getContext('2d');
 const BS=8;
-const MOVABLE=new Set([1,2,3,4,6,7,8,10,12,13,14,15,17,19]);
-const MODEL='https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite';
-const VISION='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-let stream=null,baseFps=30,busy=false,segmenter=null;
+let stream=null,baseFps=30,busy=false;
 
 function fillTargets(){
   const prev=+targetSel.value;
@@ -234,229 +228,6 @@ function synth(d0,d1,PX,PY,t,o,w,h){
   }
 }
 
-async function getSegmenter(){
-  if(segmenter)return segmenter;
-  const mod=await import(VISION+'/vision_bundle.mjs');
-  const fileset=await mod.FilesetResolver.forVisionTasks(VISION+'/wasm');
-  const make=delegate=>mod.ImageSegmenter.createFromOptions(fileset,{baseOptions:{modelAssetPath:MODEL,delegate},runningMode:'IMAGE',outputCategoryMask:true,outputConfidenceMasks:false});
-  try{segmenter=await make('GPU')}catch(e){segmenter=await make('CPU')}
-  return segmenter;
-}
-
-function segmentCanvas(seg,canvas,hw,hh){
-  let cls=null;
-  const take=r=>{
-    const m=r.categoryMask,mw=m.width,mh=m.height,arr=m.getAsUint8Array();
-    cls=new Uint8Array(hw*hh);
-    for(let y=0;y<hh;y++){
-      const row=Math.min(mh-1,Math.floor(y*mh/hh))*mw;
-      for(let x=0;x<hw;x++)cls[y*hw+x]=arr[row+Math.min(mw-1,Math.floor(x*mw/hw))];
-    }
-  };
-  const r=seg.segment(canvas,take);
-  if(!cls&&r&&r.categoryMask){take(r);if(r.close)r.close()}
-  return cls;
-}
-
-function components(cls,hw,hh){
-  const map=new Uint8Array(hw*hh),comps=[];
-  const stack=new Int32Array(hw*hh);
-  const minArea=hw*hh*0.003;
-  for(let i=0;i<hw*hh;i++){
-    const c=cls[i];
-    if(map[i]||!MOVABLE.has(c))continue;
-    if(comps.length>=250)break;
-    const id=comps.length+1;
-    let sp=0;stack[sp++]=i;map[i]=id;
-    let area=0,sx=0,sy=0,x0=hw,y0=hh,x1=0,y1=0;
-    while(sp){
-      const j=stack[--sp],x=j%hw,y=(j-x)/hw;
-      area++;sx+=x;sy+=y;
-      if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;
-      if(x>0&&!map[j-1]&&cls[j-1]===c){map[j-1]=id;stack[sp++]=j-1}
-      if(x<hw-1&&!map[j+1]&&cls[j+1]===c){map[j+1]=id;stack[sp++]=j+1}
-      if(y>0&&!map[j-hw]&&cls[j-hw]===c){map[j-hw]=id;stack[sp++]=j-hw}
-      if(y<hh-1&&!map[j+hw]&&cls[j+hw]===c){map[j+hw]=id;stack[sp++]=j+hw}
-    }
-    comps.push({id,cls:c,area,cx:sx/area,cy:sy/area,x0,y0,x1,y1,tiny:area<minArea});
-  }
-  return {map,comps};
-}
-
-function matchComps(A,B,hw){
-  const cand=[];
-  for(const a of A)for(const b of B){
-    if(a.cls!==b.cls||a.tiny||b.tiny)continue;
-    const d=Math.hypot(a.cx-b.cx,a.cy-b.cy),r=b.area/a.area;
-    if(d>hw*0.3||r<0.3||r>3.3)continue;
-    cand.push({a,b,s:d/hw+Math.abs(Math.log(r))*0.3});
-  }
-  cand.sort((p,q)=>p.s-q.s);
-  const ua=new Set(),ub=new Set(),pairs=[];
-  for(const c of cand){
-    if(ua.has(c.a.id)||ub.has(c.b.id))continue;
-    ua.add(c.a.id);ub.add(c.b.id);pairs.push([c.a,c.b]);
-  }
-  return pairs;
-}
-
-function solve4(N,r){
-  for(let i=0;i<4;i++){
-    let p=i;
-    for(let k=i+1;k<4;k++)if(Math.abs(N[k][i])>Math.abs(N[p][i]))p=k;
-    if(Math.abs(N[p][i])<1e-9)return null;
-    [N[i],N[p]]=[N[p],N[i]];[r[i],r[p]]=[r[p],r[i]];
-    for(let k=i+1;k<4;k++){
-      const f=N[k][i]/N[i][i];
-      for(let j=i;j<4;j++)N[k][j]-=f*N[i][j];
-      r[k]-=f*r[i];
-    }
-  }
-  const x=[0,0,0,0];
-  for(let i=3;i>=0;i--){
-    let s=r[i];
-    for(let j=i+1;j<4;j++)s-=N[i][j]*x[j];
-    x[i]=s/N[i][i];
-  }
-  return x;
-}
-
-function leastSquares(samples){
-  const N=[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]],r=[0,0,0,0];
-  for(const [dx,dy,vx,vy] of samples){
-    const rows=[[[1,0,dx,-dy],vx],[[0,1,dy,dx],vy]];
-    for(const [row,val] of rows){
-      for(let i=0;i<4;i++){r[i]+=row[i]*val;for(let j=0;j<4;j++)N[i][j]+=row[i]*row[j]}
-    }
-  }
-  return solve4(N,r);
-}
-
-function fitSubject(g0,g1,hw,hh,a,b,map0){
-  const ix=Math.round(b.cx-a.cx),iy=Math.round(b.cy-a.cy);
-  const samples=[];
-  for(let by=Math.floor(a.y0/BS);by<=Math.floor(a.y1/BS);by++)for(let bx=Math.floor(a.x0/BS);bx<=Math.floor(a.x1/BS);bx++){
-    const x=bx*BS,y=by*BS;
-    if(x+BS>hw||y+BS>hh)continue;
-    let cov=0;
-    for(let j=0;j<BS;j++)for(let i=0;i<BS;i++)if(map0[(y+j)*hw+x+i]===a.id)cov++;
-    if(cov<BS*BS*0.6)continue;
-    let cx=Math.min(Math.max(ix,-x),hw-BS-x),cy=Math.min(Math.max(iy,-y),hh-BS-y);
-    let best=blockSad(g0,g1,hw,x,y,cx,cy,1e9);
-    for(const step of [4,2,1]){
-      let nx=cx,ny=cy;
-      for(let dy=-step;dy<=step;dy+=step)for(let dx=-step;dx<=step;dx+=step){
-        if(!dx&&!dy)continue;
-        const tx=cx+dx,ty=cy+dy;
-        if(x+tx<0||y+ty<0||x+tx+BS>hw||y+ty+BS>hh)continue;
-        const s=blockSad(g0,g1,hw,x,y,tx,ty,best*0.98);
-        if(s<best*0.98){best=s;nx=tx;ny=ty}
-      }
-      cx=nx;cy=ny;
-    }
-    samples.push([x+(BS-1)/2-a.cx,y+(BS-1)/2-a.cy,cx,cy]);
-  }
-  let ax=b.cx-a.cx,ay=b.cy-a.cy,ds=0,dr=0;
-  if(samples.length>=4){
-    let x=leastSquares(samples);
-    if(x){
-      const res=samples.map(([dx,dy,vx,vy])=>Math.hypot(ax_(x,dx,dy,vx,vy,0),ax_(x,dx,dy,vx,vy,1)));
-      const sorted=[...res].sort((p,q)=>p-q),lim=Math.max(1,2.5*sorted[sorted.length>>1]);
-      const kept=samples.filter((s,i)=>res[i]<=lim);
-      if(kept.length>=4){const x2=leastSquares(kept);if(x2)x=x2}
-      ax=x[0];ay=x[1];ds=Math.max(-0.5,Math.min(0.5,x[2]));dr=Math.max(-0.5,Math.min(0.5,x[3]));
-    }
-  }
-  return {c0x:a.cx*2+0.5,c0y:a.cy*2+0.5,ax:ax*2,ay:ay*2,ds,dr,id0:a.id,id1:b.id,bottom:a.y1,x0:a.x0*2,y0:a.y0*2,x1:a.x1*2+1,y1:a.y1*2+1};
-}
-
-function ax_(x,dx,dy,vx,vy,which){
-  return which===0?vx-(x[0]+x[2]*dx-x[3]*dy):vy-(x[1]+x[2]*dy+x[3]*dx);
-}
-
-function buildU(pairs,map0,map1,hw,hh){
-  const ma=new Uint8Array(256),mb=new Uint8Array(256);
-  for(const [a,b] of pairs){ma[a.id]=1;mb[b.id]=1}
-  let u=new Uint8Array(hw*hh);
-  for(let i=0;i<u.length;i++)u[i]=ma[map0[i]]|mb[map1[i]];
-  for(let it=0;it<3;it++){
-    const n=u.slice();
-    for(let y=0;y<hh;y++)for(let x=0;x<hw;x++){
-      const i=y*hw+x;
-      if(u[i])continue;
-      if((x>0&&u[i-1])||(x<hw-1&&u[i+1])||(y>0&&u[i-hw])||(y<hh-1&&u[i+hw]))n[i]=1;
-    }
-    u=n;
-  }
-  return u;
-}
-
-function meanOutside(d,u,w,h,hw){
-  const m=[0,0,0];let n=0;
-  for(let y=0;y<h;y+=5)for(let x=0;x<w;x+=5){
-    if(u[(y>>1)*hw+(x>>1)])continue;
-    const i=(y*w+x)*4;
-    m[0]+=d[i];m[1]+=d[i+1];m[2]+=d[i+2];n++;
-  }
-  return n?m.map(v=>v/n):[1,1,1];
-}
-
-function buildPlate(samples,w,h){
-  const n=samples.length,plate=new Uint8ClampedArray(w*h*4),buf=new Uint8Array(n);
-  for(let i=0;i<w*h*4;i++){
-    if((i&3)===3){plate[i]=255;continue}
-    for(let k=0;k<n;k++)buf[k]=samples[k][i];
-    buf.sort();
-    plate[i]=buf[n>>1];
-  }
-  return plate;
-}
-
-const smp=new Float32Array(3);
-function sampleBilinear(d,w,h,x,y){
-  x=x<0?0:x>w-1.001?w-1.001:x;y=y<0?0:y>h-1.001?h-1.001:y;
-  const x0=x|0,y0=y|0,fx_=x-x0,fy_=y-y0,i=(y0*w+x0)*4;
-  for(let c=0;c<3;c++){
-    smp[c]=(d[i+c]*(1-fx_)+d[i+4+c]*fx_)*(1-fy_)+(d[i+w*4+c]*(1-fx_)+d[i+w*4+4+c]*fx_)*fy_;
-  }
-}
-
-function paintSubject(o,d0,d1,w,h,hw,t,S,map0,map1){
-  const {c0x,c0y,ax,ay,ds,dr,id0,id1}=S;
-  const m11=1+t*ds,m12=-t*dr,m21=t*dr,m22=m11,det=m11*m22-m12*m21;
-  const i11=m22/det,i12=-m12/det,i21=-m21/det,i22=m11/det;
-  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-  for(const [px,py] of [[S.x0,S.y0],[S.x1,S.y0],[S.x0,S.y1],[S.x1,S.y1]]){
-    const qx=c0x+t*ax+m11*(px-c0x)+m12*(py-c0y),qy=c0y+t*ay+m21*(px-c0x)+m22*(py-c0y);
-    if(qx<minx)minx=qx;if(qx>maxx)maxx=qx;if(qy<miny)miny=qy;if(qy>maxy)maxy=qy;
-  }
-  minx=Math.max(0,Math.floor(minx)-3);miny=Math.max(0,Math.floor(miny)-3);
-  maxx=Math.min(w-1,Math.ceil(maxx)+3);maxy=Math.min(h-1,Math.ceil(maxy)+3);
-  for(let y=miny;y<=maxy;y++)for(let x=minx;x<=maxx;x++){
-    const rx=x-c0x-t*ax,ry=y-c0y-t*ay;
-    const px=c0x+i11*rx+i12*ry,py=c0y+i21*rx+i22*ry;
-    if(px<0||py<0||px>w-1||py>h-1)continue;
-    const in0=map0[((py*0.5)|0)*hw+((px*0.5)|0)]===id0;
-    const p1x=px+ax+ds*(px-c0x)-dr*(py-c0y),p1y=py+ay+ds*(py-c0y)+dr*(px-c0x);
-    const ok1=p1x>=0&&p1y>=0&&p1x<=w-1&&p1y<=h-1&&map1[((p1y*0.5)|0)*hw+((p1x*0.5)|0)]===id1;
-    if(!in0&&!ok1)continue;
-    const k=(y*w+x)*4;
-    if(in0&&ok1){
-      sampleBilinear(d0,w,h,px,py);
-      const r0=smp[0],g0=smp[1],b0=smp[2];
-      sampleBilinear(d1,w,h,p1x,p1y);
-      o[k]=r0*(1-t)+smp[0]*t;o[k+1]=g0*(1-t)+smp[1]*t;o[k+2]=b0*(1-t)+smp[2]*t;
-    }else if(in0){
-      sampleBilinear(d0,w,h,px,py);
-      o[k]=smp[0];o[k+1]=smp[1];o[k+2]=smp[2];
-    }else{
-      sampleBilinear(d1,w,h,p1x,p1y);
-      o[k]=smp[0];o[k+1]=smp[1];o[k+2]=smp[2];
-    }
-    o[k+3]=255;
-  }
-}
-
 async function pickCodec(w,h,fps,bitrate){
   for(const codec of ['avc1.640033','avc1.4d0033','avc1.64002a','avc1.42003e']){
     try{
@@ -481,53 +252,6 @@ async function build(take){
     const bitrate=Math.min(60e6,Math.round(w*h*Math.max(playFps,30)*0.1));
     const cfg=await pickCodec(w,h,playFps,bitrate);
     if(!cfg)throw new Error('This browser cannot encode H.264 at '+playFps+' fps. Try a lower target.');
-
-    let seg=null;
-    if(smartChk.checked){
-      statusEl.textContent='Loading subject model...';
-      try{seg=await getSegmenter()}catch(e){statusEl.textContent='Subject model unavailable, using plain interpolation.';await sleep(1200)}
-    }
-
-    const grays=[],frames=[],samples=[];
-    const sampleEvery=Math.max(1,Math.floor(N/15));
-    let subjectsSeen=0;
-    statusEl.textContent=seg?'Finding subjects...':'Analyzing motion...';
-    for(let i=0;i<N;i++){
-      const d=await loadFrame(take.blobs[i],w,h);
-      grays.push(halfGray(d,w,h));
-      if(seg){
-        const cls=segmentCanvas(seg,wc,hw,hh);
-        const c=cls?components(cls,hw,hh):{map:new Uint8Array(hw*hh),comps:[]};
-        frames.push(c);
-        subjectsSeen=Math.max(subjectsSeen,c.comps.filter(x=>!x.tiny).length);
-      }
-      if(seg&&i%sampleEvery===0&&samples.length<15)samples.push(d.data);
-      prog.value=0.4*i/N;
-      await sleep(0);
-    }
-
-    let staticCam=false,plate=null;
-    if(seg&&subjectsSeen>0){
-      const mid=N>>1;
-      const f=motionField(grays[0],grays[mid],hw,hh);
-      const mags=[];
-      for(let by=0;by<f.bh;by++)for(let bx=0;bx<f.bw;bx++){
-        let hit=false;
-        for(let j=0;j<BS&&!hit;j++)for(let i=0;i<BS;i++){
-          const p=(by*BS+j)*hw+bx*BS+i;
-          if(frames[0].map[p]||frames[mid].map[p]){hit=true;break}
-        }
-        if(!hit)mags.push(Math.hypot(f.vx[by*f.bw+bx],f.vy[by*f.bw+bx]));
-      }
-      mags.sort((p,q)=>p-q);
-      staticCam=mags.length>=20&&mags[mags.length>>1]<1.5;
-      if(staticCam){
-        statusEl.textContent='Building clean background...';
-        await sleep(20);
-        plate=buildPlate(samples,w,h);
-      }
-    }
-
     const muxer=new Mp4Muxer.Muxer({target:new Mp4Muxer.ArrayBufferTarget(),video:{codec:'avc',width:w,height:h},fastStart:'in-memory'});
     let encErr=null;
     const enc=new VideoEncoder({output:(c,mt)=>muxer.addVideoChunk(c,mt),error:e=>{encErr=e}});
@@ -544,51 +268,22 @@ async function build(take){
       idx++;
       while(enc.encodeQueueSize>16)await sleep(4);
     };
-
     statusEl.textContent='Rendering '+((N-1)*m+1)+' frames...';
     let d0=await loadFrame(take.blobs[0],w,h);
-    let moved=0;
+    let g0=halfGray(d0,w,h);
     for(let i=0;i<N-1;i++){
       const d1=await loadFrame(take.blobs[i+1],w,h);
-      const f=medianField(motionField(grays[i],grays[i+1],hw,hh));
+      const g1=halfGray(d1,w,h);
+      const f=medianField(motionField(g0,g1,hw,hh));
       const {PX,PY}=denseField(f,w,h);
-      let subs=[],U=null,gain0=null,gain1=null,pm=null;
-      if(seg){
-        const A=frames[i],B=frames[i+1];
-        const pairs=matchComps(A.comps,B.comps,hw);
-        if(pairs.length){
-          subs=pairs.map(([a,b])=>fitSubject(grays[i],grays[i+1],hw,hh,a,b,A.map));
-          subs.sort((p,q)=>p.bottom-q.bottom);
-          moved=Math.max(moved,subs.length);
-          if(plate){
-            U=buildU(pairs,A.map,B.map,hw,hh);
-            const mp=meanOutside(plate,U,w,h,hw);
-            gain0=meanOutside(d0.data,U,w,h,hw).map((v,c)=>v/mp[c]);
-            gain1=meanOutside(d1.data,U,w,h,hw).map((v,c)=>v/mp[c]);
-            pm=plate;
-          }
-        }
-      }
       od.data.set(d0.data);
       await push();
       for(let k=1;k<m;k++){
-        const t=k/m;
-        synthSmooth(d0.data,d1.data,PX,PY,t,od.data,w,h);
-        if(subs.length){
-          if(U){
-            const g=[0,1,2].map(c=>gain0[c]*(1-t)+gain1[c]*t),o=od.data;
-            for(let y=0;y<h;y++)for(let x=0;x<w;x++){
-              if(!U[(y>>1)*hw+(x>>1)])continue;
-              const q=(y*w+x)*4;
-              o[q]=Math.min(255,pm[q]*g[0]);o[q+1]=Math.min(255,pm[q+1]*g[1]);o[q+2]=Math.min(255,pm[q+2]*g[2]);
-            }
-          }
-          for(const S of subs)paintSubject(od.data,d0.data,d1.data,w,h,hw,t,S,frames[i].map,frames[i+1].map);
-        }
+        synthSmooth(d0.data,d1.data,PX,PY,k/m,od.data,w,h);
         await push();
       }
-      d0=d1;
-      prog.value=0.4+0.6*i/(N-1);
+      d0=d1;g0=g1;
+      prog.value=i/(N-1);
       await sleep(0);
     }
     od.data.set(d0.data);
@@ -599,7 +294,7 @@ async function build(take){
     const url=URL.createObjectURL(blob);
     out.src=url;out.hidden=false;
     dl.href=url;dl.download='fusion_'+target+'fps'+(playFps===target?'':'_slowmo')+'.mp4';dl.style.display='block';
-    statusEl.textContent='Done: '+idx+' frames, '+m+'x from '+baseFps+' fps, playing at '+playFps+' fps ('+(idx/playFps).toFixed(2)+' s'+(playFps<target?', '+(target/playFps).toFixed(1)+'x slower':'')+').\n'+(seg?(moved?'Subjects tracked: up to '+moved+' at once. Background: '+(staticCam?'clean plate (static camera).':'blended (camera moved).'):'No subjects recognized, plain interpolation used.'):'Plain interpolation.');
+    statusEl.textContent='Done: '+idx+' frames, '+m+'x from '+baseFps+' fps, playing at '+playFps+' fps ('+(idx/playFps).toFixed(2)+' s'+(playFps<target?', '+(target/playFps).toFixed(1)+'x slower':'')+').';
   }catch(e){
     statusEl.textContent='Error: '+(e.message||e);
   }
