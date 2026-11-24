@@ -28,6 +28,7 @@ a#dl{display:none;text-align:center;text-decoration:none;color:#fff;background:#
 <div class="row">
 <select id="res"><option value="640">640 wide</option><option value="960" selected>960 wide</option><option value="1280">1280 wide</option></select>
 <select id="len"><option value="2">2 s takes</option><option value="3" selected>3 s takes</option><option value="4">4 s takes</option></select>
+<select id="mode"><option value="live" selected>Live motion (interpolated)</option><option value="repeat">Repeating motion (real frames)</option></select>
 <select id="target"></select>
 <select id="speed"><option value="slow" selected>Slow-mo</option><option value="real">Real time</option></select>
 </div>
@@ -37,12 +38,12 @@ a#dl{display:none;text-align:center;text-decoration:none;color:#fff;background:#
 <progress id="prog" value="0" max="1" hidden></progress>
 <video id="out" controls playsinline loop hidden></video>
 <a id="dl">Download MP4</a>
-<div id="note">Film a repeating motion (spinning fan, pendulum, metronome) from a fixed camera. Capture records all needed takes back to back with random gaps, aligns them by image matching, and interleaves them into the target frame rate. Slow-mo plays the result at 30 fps.</div>
+<div id="note">Live mode records one take and synthesizes the in-between frames with motion estimation, so it works on any action but the extra frames are generated, not real. Repeating mode records several takes of a repeating motion (fan, pendulum, metronome) from a fixed camera and interleaves real frames. Slow-mo plays the result at 30 fps.</div>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),targetSel=$('target'),resSel=$('res'),lenSel=$('len'),recBtn=$('rec'),speedSel=$('speed'),takesEl=$('takes'),prog=$('prog'),out=$('out'),dl=$('dl');
+const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),targetSel=$('target'),resSel=$('res'),lenSel=$('len'),recBtn=$('rec'),speedSel=$('speed'),modeSel=$('mode'),takesEl=$('takes'),prog=$('prog'),out=$('out'),dl=$('dl');
 const GW=32,GH=18;
 const gc=document.createElement('canvas');gc.width=GW;gc.height=GH;
 const gx=gc.getContext('2d',{willReadFrequently:true});
@@ -57,7 +58,7 @@ function fillTargets(){
     const t=baseFps*m;
     if(t>480)break;
     const o=document.createElement('option');
-    o.value=t;o.textContent=t+' fps ('+m+' takes)';
+    o.value=t;o.textContent=t+' fps';
     targetSel.appendChild(o);
   }
   if([...targetSel.options].some(o=>+o.value===prev))targetSel.value=prev;
@@ -98,7 +99,7 @@ async function openCamera(){
 
 function renderTakes(){
   const need=+targetSel.value/baseFps||2;
-  takesEl.textContent=takes.length?'Takes: '+takes.length+'/'+need:'Needs '+need+' takes, recorded automatically.';
+  takesEl.textContent=modeSel.value==='live'?'Records one take, then synthesizes in-between frames with motion estimation.':takes.length?'Takes: '+takes.length+'/'+need:'Needs '+need+' takes, recorded automatically.';
   recBtn.disabled=busy||!stream;
 }
 
@@ -225,12 +226,193 @@ async function build(){
   busy=false;renderTakes();
 }
 
+const wc=document.createElement('canvas');
+const wx=wc.getContext('2d',{willReadFrequently:true});
+const oc=document.createElement('canvas');
+const ox=oc.getContext('2d');
+const BS=8;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function loadFrame(blob,w,h){
+  const b=await createImageBitmap(blob);
+  wc.width=w;wc.height=h;
+  wx.drawImage(b,0,0,w,h);
+  b.close();
+  return wx.getImageData(0,0,w,h);
+}
+
+function halfGray(d,w,h){
+  const hw=w>>1,hh=h>>1,g=new Uint8Array(hw*hh),px=d.data;
+  for(let y=0;y<hh;y++)for(let x=0;x<hw;x++){
+    const i=(y*2*w+x*2)*4;
+    g[y*hw+x]=(px[i]+2*px[i+1]+px[i+2])>>2;
+  }
+  return {g,hw,hh};
+}
+
+function blockSad(a,b,hw,x,y,dx,dy,limit){
+  let s=0;
+  for(let j=0;j<BS;j++){
+    const ra=(y+j)*hw+x,rb=(y+j+dy)*hw+x+dx;
+    for(let i=0;i<BS;i++){const d=a[ra+i]-b[rb+i];s+=d<0?-d:d}
+    if(s>=limit)return s;
+  }
+  return s;
+}
+
+function motionField(a,b,hw,hh){
+  const bw=Math.floor(hw/BS),bh=Math.floor(hh/BS);
+  const vx=new Float32Array(bw*bh),vy=new Float32Array(bw*bh);
+  for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){
+    const x=bx*BS,y=by*BS;
+    let cx=0,cy=0,best=blockSad(a,b,hw,x,y,0,0,1e9);
+    if(best>BS*BS*2){
+      for(const step of [8,4,2,1]){
+        let nx=cx,ny=cy;
+        for(let dy=-step;dy<=step;dy+=step)for(let dx=-step;dx<=step;dx+=step){
+          if(!dx&&!dy)continue;
+          const tx=cx+dx,ty=cy+dy;
+          if(x+tx<0||y+ty<0||x+tx+BS>hw||y+ty+BS>hh)continue;
+          const s=blockSad(a,b,hw,x,y,tx,ty,best*0.98);
+          if(s<best*0.98){best=s;nx=tx;ny=ty}
+        }
+        cx=nx;cy=ny;
+      }
+    }
+    vx[by*bw+bx]=cx*2;vy[by*bw+bx]=cy*2;
+  }
+  return {vx,vy,bw,bh};
+}
+
+function medianField(f){
+  const {vx,vy,bw,bh}=f;
+  const mx=new Float32Array(vx.length),my=new Float32Array(vy.length);
+  const ax=new Float32Array(9),ay=new Float32Array(9);
+  for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){
+    let n=0;
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      const xx=Math.min(Math.max(bx+dx,0),bw-1),yy=Math.min(Math.max(by+dy,0),bh-1);
+      ax[n]=vx[yy*bw+xx];ay[n]=vy[yy*bw+xx];n++;
+    }
+    ax.sort();ay.sort();
+    mx[by*bw+bx]=ax[4];my[by*bw+bx]=ay[4];
+  }
+  return {vx:mx,vy:my,bw,bh};
+}
+
+function denseField(f,w,h){
+  const PX=new Float32Array(w*h),PY=new Float32Array(w*h);
+  const {vx,vy,bw,bh}=f;
+  const sc=1/(BS*2);
+  for(let y=0;y<h;y++){
+    const fy=Math.min(Math.max(y*sc-0.5,0),bh-1),y0=Math.floor(fy),y1=Math.min(y0+1,bh-1),wy=fy-y0;
+    for(let x=0;x<w;x++){
+      const fxx=Math.min(Math.max(x*sc-0.5,0),bw-1),x0=Math.floor(fxx),x1=Math.min(x0+1,bw-1),wxx=fxx-x0;
+      const i00=y0*bw+x0,i10=y0*bw+x1,i01=y1*bw+x0,i11=y1*bw+x1;
+      const a=1-wxx;
+      PX[y*w+x]=(vx[i00]*a+vx[i10]*wxx)*(1-wy)+(vx[i01]*a+vx[i11]*wxx)*wy;
+      PY[y*w+x]=(vy[i00]*a+vy[i10]*wxx)*(1-wy)+(vy[i01]*a+vy[i11]*wxx)*wy;
+    }
+  }
+  return {PX,PY};
+}
+
+function synth(d0,d1,PX,PY,t,o,w,h){
+  const u=1-t;
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const i=y*w+x,vx=PX[i],vy=PY[i];
+    let x0=Math.round(x-t*vx),y0=Math.round(y-t*vy),x1=Math.round(x+u*vx),y1=Math.round(y+u*vy);
+    x0=x0<0?0:x0>=w?w-1:x0;y0=y0<0?0:y0>=h?h-1:y0;
+    x1=x1<0?0:x1>=w?w-1:x1;y1=y1<0?0:y1>=h?h-1:y1;
+    const j0=(y0*w+x0)*4,j1=(y1*w+x1)*4,k=i*4;
+    const diff=Math.abs(d0[j0]-d1[j1])+Math.abs(d0[j0+1]-d1[j1+1])+Math.abs(d0[j0+2]-d1[j1+2]);
+    if(diff>96){
+      const src=t<0.5?d0:d1;
+      o[k]=src[k];o[k+1]=src[k+1];o[k+2]=src[k+2];
+    }else{
+      o[k]=d0[j0]*u+d1[j1]*t;o[k+1]=d0[j0+1]*u+d1[j1+1]*t;o[k+2]=d0[j0+2]*u+d1[j1+2]*t;
+    }
+    o[k+3]=255;
+  }
+}
+
+async function buildLive(take){
+  busy=true;renderTakes();
+  prog.hidden=false;prog.value=0;
+  out.hidden=true;dl.style.display='none';
+  try{
+    const target=+targetSel.value;
+    const m=Math.round(target/baseFps);
+    const w=take.w,h=take.h,N=take.blobs.length;
+    if(N<2)throw new Error('Take too short.');
+    const playFps=speedSel.value==='slow'?30:target;
+    const bitrate=Math.min(60e6,Math.round(w*h*Math.max(playFps,30)*0.1));
+    const cfg=await pickCodec(w,h,playFps,bitrate);
+    if(!cfg)throw new Error('This browser cannot encode H.264 at '+playFps+' fps. Try a lower target.');
+    const muxer=new Mp4Muxer.Muxer({target:new Mp4Muxer.ArrayBufferTarget(),video:{codec:'avc',width:w,height:h},fastStart:'in-memory'});
+    let encErr=null;
+    const enc=new VideoEncoder({output:(c,mt)=>muxer.addVideoChunk(c,mt),error:e=>{encErr=e}});
+    enc.configure(cfg);
+    const od=new ImageData(w,h);
+    oc.width=w;oc.height=h;
+    let idx=0;
+    const push=async()=>{
+      if(encErr)throw encErr;
+      ox.putImageData(od,0,0);
+      const frame=new VideoFrame(oc,{timestamp:Math.round(idx*1e6/playFps),duration:Math.round(1e6/playFps)});
+      enc.encode(frame,{keyFrame:idx%Math.round(playFps)===0});
+      frame.close();
+      idx++;
+      while(enc.encodeQueueSize>16)await sleep(4);
+    };
+    statusEl.textContent='Synthesizing '+((N-1)*m+1)+' frames...';
+    let d0=await loadFrame(take.blobs[0],w,h);
+    for(let i=0;i<N-1;i++){
+      const d1=await loadFrame(take.blobs[i+1],w,h);
+      const g0=halfGray(d0,w,h),g1=halfGray(d1,w,h);
+      const f=medianField(motionField(g0.g,g1.g,g0.hw,g0.hh));
+      const {PX,PY}=denseField(f,w,h);
+      od.data.set(d0.data);
+      await push();
+      for(let k=1;k<m;k++){
+        synth(d0.data,d1.data,PX,PY,k/m,od.data,w,h);
+        await push();
+      }
+      d0=d1;
+      prog.value=i/(N-1);
+      await sleep(0);
+    }
+    od.data.set(d0.data);
+    await push();
+    await enc.flush();
+    muxer.finalize();
+    const blob=new Blob([muxer.target.buffer],{type:'video/mp4'});
+    const url=URL.createObjectURL(blob);
+    out.src=url;out.hidden=false;
+    dl.href=url;dl.download='fusion_'+target+'fps_interp'+(playFps===target?'':'_slowmo')+'.mp4';dl.style.display='block';
+    statusEl.textContent='Done: '+idx+' frames, '+m+'x interpolated from '+baseFps+' fps, playing at '+playFps+' fps ('+(idx/playFps).toFixed(2)+' s'+(playFps<target?', '+(target/playFps).toFixed(1)+'x slower':'')+').';
+  }catch(e){
+    statusEl.textContent='Error: '+(e.message||e);
+  }
+  prog.hidden=true;
+  busy=false;renderTakes();
+}
+
 startBtn.onclick=async()=>{
   try{await openCamera()}catch(e){statusEl.textContent='Error: '+(e.message||e)}
 };
 resSel.onchange=()=>{if(stream)startBtn.click()};
 targetSel.onchange=renderTakes;
+modeSel.onchange=renderTakes;
 recBtn.onclick=async()=>{
+  if(modeSel.value==='live'){
+    busy=true;renderTakes();
+    statusEl.textContent='Recording...';
+    const t=await recordTake(+lenSel.value);
+    busy=false;
+    await buildLive(t);
+    return;
+  }
   busy=true;takes=[];renderTakes();
   const need=Math.round(+targetSel.value/baseFps);
   for(let i=0;i<need;i++){
