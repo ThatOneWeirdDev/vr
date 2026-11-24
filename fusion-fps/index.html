@@ -27,17 +27,18 @@ label.rng input{flex:1}
 <canvas id="livecv" hidden></canvas>
 <div id="status">Camera off.</div>
 <label class="rng"><span>Bounce</span><input type="range" id="bounce" min="1" max="10" value="5"></label>
-<label class="rng"><span>Wobble time</span><input type="range" id="wobble" min="3" max="20" value="9"></label>
+<label class="rng"><span>Wobble time</span><input type="range" id="wobble" min="3" max="20" value="12"></label>
 <button class="primary" id="start">Start camera</button>
-<div id="note">Live camera. It finds moving objects, and when one suddenly stops, like a hand hitting a leg, it is cut out, moved and squashed like a cartoon while the background behind it is filled in from a learned clean plate, and the spot it hit wobbles. Start with the object out of frame and keep the phone still so the background can be learned. Objects are found by motion only, not by recognizing what they are.</div>
+<button id="demo">Demo scene</button>
+<div id="note">Live camera. It finds moving objects, and when one suddenly stops, like a hand hitting a leg, it is cut out, moved and squashed like a cartoon while the background behind it is filled in from a learned clean plate, and the spot it hit wobbles. Tap anything on the live image to bounce it on demand, or try the demo scene without a camera. Start with the object out of frame and keep the phone still so the background can be learned. Objects are found by motion only, not by recognizing what they are.</div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
-const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),livecv=$('livecv'),bounceEl=$('bounce'),wobbleEl=$('wobble');
+const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),demoBtn=$('demo'),livecv=$('livecv'),bounceEl=$('bounce'),wobbleEl=$('wobble');
 const lctx=livecv.getContext('2d');
 const lcan=document.createElement('canvas');
 const lx=lcan.getContext('2d',{willReadFrequently:true});
-const BS=8,BF=16,LIVE_W=480,MOVE=180,IMPACT=240,DIFF=60;
+const BS=6,BF=12,LIVE_W=480,MOVE=90,IMPACT=110,DIFF=60,MINB=2;
 let stream=null,baseFps=30;
 const live={on:false,W:0,H:0,bw:0,bh:0,pg:null,dx:null,dy:null,objs:[],evs:[],od:null,tmp:null,plate:null,age:null,mov:null,cur:null,frames:0,t0:0,hits:0};
 
@@ -146,19 +147,209 @@ function denseField(f,w,h){
   return {PX,PY};
 }
 
-function startLive(){
-  const W=LIVE_W,H=(Math.round(W*cam.videoHeight/cam.videoWidth)>>1)<<1;
+function demoRng(a){
+  return function(){
+    a|=0;a=a+0x6D2B79F5|0;
+    let t=Math.imul(a^a>>>15,1|a);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return((t^t>>>14)>>>0)/4294967296;
+  };
+}
+
+function demoMake(seed,n,W,H,shake,big){
+  const rnd=demoRng(seed);
+  const balls=[];
+  for(let i=0;i<n;i++){
+    const r=(0.28+rnd()*0.3)*(big?2.2:1);
+    balls.push({
+      p:[(rnd()-0.5)*(big?5:7),r+rnd()*3,big?(0+rnd()*3):(1.5+rnd()*5)],
+      v:[(rnd()-0.5)*6*(big?1.6:1),(rnd()-0.5)*4*(big?1.6:1),(rnd()-0.5)*5*(big?0.5:1)],
+      r,
+      c:[80+rnd()*175,80+rnd()*175,80+rnd()*175],
+      s:2+Math.floor(rnd()*4)
+    });
+  }
+  const decor=[];
+  for(let i=0;i<5;i++)decor.push({x:-4+i*2+rnd(),y:2.2+rnd()*1.5,z:8,r:0.25,ph:rnd()*6,c:[200,60+rnd()*150,60+rnd()*150]});
+  return {W,H,balls,decor,t:0,frame:0,shake:!!shake};
+}
+
+function demoProject(sc,p){
+  const F=sc.W*1.0,cz=-7,cy=1.6;
+  const z=p[2]-cz;
+  return [sc.W/2+p[0]/z*F,sc.H/2-(p[1]-cy)/z*F];
+}
+
+function demoStep(sc,dt){
+  const X=5,Z0=-3,Z1=8;
+  sc.frame++;
+  sc.t+=dt;
+  for(const b of sc.balls){
+    b.v[1]-=9.8*dt;
+    for(let k=0;k<3;k++)b.p[k]+=b.v[k]*dt;
+    if(b.p[1]<b.r){b.p[1]=b.r;if(b.v[1]<0){b.v[1]=-b.v[1]*0.93;}}
+    if(b.p[0]>X-b.r){b.p[0]=X-b.r;b.v[0]=-Math.abs(b.v[0])*0.95;}
+    if(b.p[0]<-X+b.r){b.p[0]=-X+b.r;b.v[0]=Math.abs(b.v[0])*0.95;}
+    if(b.p[2]>Z1-b.r){b.p[2]=Z1-b.r;b.v[2]=-Math.abs(b.v[2])*0.95}
+    if(b.p[2]<Z0+b.r){b.p[2]=Z0+b.r;b.v[2]=Math.abs(b.v[2])*0.95}
+  }
+  for(let i=0;i<sc.balls.length;i++)for(let j=i+1;j<sc.balls.length;j++){
+    const a=sc.balls[i],b=sc.balls[j];
+    const dx=b.p[0]-a.p[0],dy=b.p[1]-a.p[1],dz=b.p[2]-a.p[2];
+    const d=Math.hypot(dx,dy,dz),min=a.r+b.r;
+    if(d<min&&d>1e-6){
+      const nx=dx/d,ny=dy/d,nz=dz/d;
+      const rv=(b.v[0]-a.v[0])*nx+(b.v[1]-a.v[1])*ny+(b.v[2]-a.v[2])*nz;
+      if(rv<0){
+        a.v[0]+=rv*nx;a.v[1]+=rv*ny;a.v[2]+=rv*nz;
+        b.v[0]-=rv*nx;b.v[1]-=rv*ny;b.v[2]-=rv*nz;
+        
+      }
+      const push=(min-d)/2;
+      a.p[0]-=nx*push;a.p[1]-=ny*push;a.p[2]-=nz*push;
+      b.p[0]+=nx*push;b.p[1]+=ny*push;b.p[2]+=nz*push;
+    }
+  }
+}
+
+function demoRender(sc,out){
+  const {W,H}=sc;
+  const F=W*1.0;
+  const sh=sc.shake?[Math.sin(sc.t*13)*0.03,Math.cos(sc.t*11)*0.02]:[0,0];
+  const C=[sh[0],1.6+sh[1],-7];
+  const L=[-0.5,0.8,-0.4],ll=Math.hypot(L[0],L[1],L[2]);
+  L[0]/=ll;L[1]/=ll;L[2]/=ll;
+  const spheres=sc.balls.map(b=>({p:b.p,r:b.r,c:b.c,s:b.s,k:0}));
+  for(const d of sc.decor)spheres.push({p:[d.x,d.y+Math.sin(sc.t*1.3+d.ph)*0.3,d.z],r:d.r,c:d.c,s:3,k:1});
+  const ns=spheres.length;
+  for(let y=0;y<H;y++){
+    const dy=-(y-H/2)/F;
+    for(let x=0;x<W;x++){
+      const dx=(x-W/2)/F,dz=1;
+      const dl=Math.hypot(dx,dy,dz),rx=dx/dl,ry=dy/dl,rz=dz/dl;
+      let bt=1e9,hit=-1;
+      for(let s=0;s<ns;s++){
+        const sp=spheres[s],ox=C[0]-sp.p[0],oy=C[1]-sp.p[1],oz=C[2]-sp.p[2];
+        const b=ox*rx+oy*ry+oz*rz,c=ox*ox+oy*oy+oz*oz-sp.r*sp.r,disc=b*b-c;
+        if(disc>0){const t=-b-Math.sqrt(disc);if(t>0&&t<bt){bt=t;hit=s}}
+      }
+      let tp=1e9,kind=0;
+      if(ry<-1e-6){const t=-C[1]/ry;if(t>0){tp=t;kind=1}}
+      const tw=(8-C[2])/rz;
+      if(tw>0&&tw<tp){tp=tw;kind=2}
+      const twl=(-5-C[0])/(rx||1e-9),twr=(5-C[0])/(rx||1e-9);
+      let r,g,bl;
+      if(hit>=0&&bt<tp){
+        const sp=spheres[hit],px=C[0]+rx*bt,py=C[1]+ry*bt,pz=C[2]+rz*bt;
+        const nx=(px-sp.p[0])/sp.r,ny=(py-sp.p[1])/sp.r,nz=(pz-sp.p[2])/sp.r;
+        const dif=Math.max(0,nx*L[0]+ny*L[1]+nz*L[2]);
+        const st=((Math.floor(nx*sp.s*2+10)+Math.floor(ny*sp.s*2+10))&1)?0.7:1;
+        const spec=Math.pow(Math.max(0,2*(nx*L[0]+ny*L[1]+nz*L[2])*nz-L[2]),20)*0.4;
+        const k=(0.3+0.7*dif)*st;
+        r=sp.c[0]*k+spec*255;g=sp.c[1]*k+spec*255;bl=sp.c[2]*k+spec*255;
+      }else if(kind===1){
+        const px=C[0]+rx*tp,pz=C[2]+rz*tp;
+        const ck=((Math.floor(px*1.5+100)+Math.floor(pz*1.5+100))&1)?1:0;
+        const nz=(Math.sin(px*37.1)*Math.cos(pz*29.3)+1)*8;
+        let k=ck?150:95;
+        for(const b of sc.balls){
+          const ddx=px-b.p[0],ddz=pz-b.p[2],d2=(ddx*ddx+ddz*ddz)/(b.r*b.r*2.2);
+          if(d2<1)k*=1-0.5*(1-d2)*Math.max(0,1-b.p[1]/4);
+        }
+        r=k+nz;g=k*0.95+nz;bl=k*0.85+nz;
+      }else if(kind===2){
+        const px=C[0]+rx*tp,py=C[1]+ry*tp;
+        const bx=Math.floor(px*2+100),by=Math.floor(py*4+100);
+        const brick=((bx+(by&1))&3)===0?0.6:1;
+        const nz=(Math.sin(px*51.7+py*13.1)*Math.cos(py*47.3)+1)*14;
+        const stripe=Math.sin(px*3)>0.6?40:0;
+        r=(130+nz+stripe)*brick;g=(80+nz)*brick;bl=(70+nz+stripe*0.5)*brick;
+      }else{
+        r=40;g=50;bl=70;
+      }
+      const i=(y*W+x)*4;
+      out[i]=r;out[i+1]=g;out[i+2]=bl;out[i+3]=255;
+    }
+  }
+}
+
+
+
+function impactAt(px,py){
+  if(!live.plate||!live.cur)return;
+  const {W,H,bw,bh}=live,fr=live.cur,pl=live.plate,R=110;
+  const x0=Math.max(0,Math.floor(px-R)),x1=Math.min(W-1,Math.ceil(px+R)),y0=Math.max(0,Math.floor(py-R)),y1=Math.min(H-1,Math.ceil(py+R));
+  const mask=new Uint8Array(W*H);
+  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+    const k=(y*W+x)*4;
+    if(Math.abs(fr[k]-pl[k])+Math.abs(fr[k+1]-pl[k+1])+Math.abs(fr[k+2]-pl[k+2])>DIFF)mask[y*W+x]=1;
+  }
+  let sx=-1,sy=-1,bd=1e9;
+  for(let y=Math.max(y0,Math.floor(py-25));y<=Math.min(y1,Math.ceil(py+25));y++)for(let x=Math.max(x0,Math.floor(px-25));x<=Math.min(x1,Math.ceil(px+25));x++){
+    if(!mask[y*W+x])continue;
+    const d=Math.hypot(x-px,y-py);
+    if(d<bd){bd=d;sx=x;sy=y}
+  }
+  const comp=new Uint8Array(W*H);
+  let cx=px,cy=py;
+  if(sx>=0){
+    const stack=[sy*W+sx];
+    comp[sy*W+sx]=1;
+    let n=0,mx=0,my=0;
+    while(stack.length){
+      const j=stack.pop(),x=j%W,y=(j-x)/W;
+      n++;mx+=x;my+=y;
+      if(x>x0&&mask[j-1]&&!comp[j-1]){comp[j-1]=1;stack.push(j-1)}
+      if(x<x1&&mask[j+1]&&!comp[j+1]){comp[j+1]=1;stack.push(j+1)}
+      if(y>y0&&mask[j-W]&&!comp[j-W]){comp[j-W]=1;stack.push(j-W)}
+      if(y<y1&&mask[j+W]&&!comp[j+W]){comp[j+W]=1;stack.push(j+W)}
+    }
+    cx=mx/n;cy=my/n;
+  }else{
+    for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)if(Math.hypot(x-px,y-py)<40)comp[y*W+x]=1;
+  }
+  const blocks=[];
+  for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){
+    let c=0;
+    for(let y=by*BF;y<Math.min(H,by*BF+BF);y++)for(let x=bx*BF;x<Math.min(W,bx*BF+BF);x++)c+=comp[y*W+x];
+    if(c>=BF*BF*0.3)blocks.push(by*bw+bx);
+  }
+  if(!blocks.length)return;
+  const ang=Math.random()*Math.PI*2,sp=6*60/baseFps;
+  impact({blocks,cx,cy,vx:Math.cos(ang)*sp,vy:Math.sin(ang)*sp,speed:sp});
+}
+
+function demoLoop(now){
+  if(!live.on||!live.demo)return;
+  requestAnimationFrame(demoLoop);
+  if(now-live.dlast<15)return;
+  live.dlast=now;
+  liveFrame();
+}
+
+function startLive(demo){
+  const W=LIVE_W,H=demo?270:(Math.round(W*cam.videoHeight/cam.videoWidth)>>1)<<1;
   livecv.width=W;livecv.height=H;
   lcan.width=W;lcan.height=H;
   const hw=W>>1,hh=H>>1,bw=Math.floor(hw/BS),bh=Math.floor(hh/BS),n=bw*bh;
-  Object.assign(live,{on:true,W,H,bw,bh,pg:null,dx:new Float32Array(n),dy:new Float32Array(n),objs:[],evs:[],od:new ImageData(W,H),tmp:new Uint8ClampedArray(W*H*4),plate:null,age:new Uint16Array(n),mov:null,cur:null,frames:0,t0:performance.now(),hits:0});
-  cam.classList.add('hide');
+  Object.assign(live,{on:true,W,H,bw,bh,pg:null,dx:new Float32Array(n),dy:new Float32Array(n),objs:[],evs:[],od:new ImageData(W,H),tmp:new Uint8ClampedArray(W*H*4),plate:null,age:new Uint16Array(n),mov:null,cur:null,frames:0,t0:performance.now(),hits:0,demo:!!demo,dlast:0,scene:null,buf:null});
   livecv.hidden=false;
-  cam.requestVideoFrameCallback(liveFrame);
+  if(demo){
+    baseFps=60;
+    live.scene=demoMake(3,12,W,H,false);
+    live.buf=new Uint8ClampedArray(W*H*4);
+    live.plate=new Uint8ClampedArray(W*H*4);
+    demoRender(demoMake(3,0,W,H,false),live.plate);
+    requestAnimationFrame(demoLoop);
+  }else{
+    cam.classList.add('hide');
+    cam.requestVideoFrameCallback(liveFrame);
+  }
 }
 
 function stopLive(){
   live.on=false;
+  live.demo=false;
   cam.classList.remove('hide');
   livecv.hidden=true;
 }
@@ -180,7 +371,7 @@ function components(f,gx,gy){
       if(y>0&&mov[j-bw]&&!seen[j-bw]){seen[j-bw]=1;stack.push(j-bw)}
       if(y<bh-1&&mov[j+bw]&&!seen[j+bw]){seen[j+bw]=1;stack.push(j+bw)}
     }
-    if(blocks.length<3)continue;
+    if(blocks.length<MINB)continue;
     let cx=0,cy=0,mx=0,my=0;
     for(const j of blocks){
       const x=j%bw,y=(j-x)/bw;
@@ -206,6 +397,12 @@ function blur3(w,bw,bh){
   return o;
 }
 
+function avgV(h){
+  let x=0,y=0;
+  for(const v of h){x+=v.vx;y+=v.vy}
+  return {vx:x/h.length,vy:y/h.length};
+}
+
 function track(comps){
   const tImp=IMPACT/baseFps,used=new Set(),next=[];
   for(const o of live.objs){
@@ -216,14 +413,31 @@ function track(comps){
       const d=Math.hypot(c.cx-o.cx-o.vx,c.cy-o.cy-o.vy);
       if(d<rad&&d<bd){bd=d;best=c}
     }
+    const ev=o.ev&&live.evs.includes(o.ev)?o.ev:null;
     if(best){
       used.add(best);
-      if(o.speed>tImp&&best.speed<o.speed*0.35&&o.age>=2){impact(o);continue}
+      const hist=[...o.hist.slice(-3),{vx:best.vx,vy:best.vy}];
+      if(ev){
+        ev.ox=ev.ox*0.5+(best.cx-ev.cx0)*0.5;ev.oy=ev.oy*0.5+(best.cy-ev.cy0)*0.5;
+      }
+      if((!ev||ev.t>0.35)&&hist.length>=4){
+        const b=avgV(hist.slice(0,2)),a=avgV(hist.slice(2)),sb=Math.hypot(b.vx,b.vy);
+        if(sb>tImp&&Math.hypot(a.vx-b.vx,a.vy-b.vy)>sb*0.8){
+          const e=impact({...o,vx:b.vx,vy:b.vy});
+          if(e){
+            next.push({blocks:best.blocks,cx:best.cx,cy:best.cy,vx:a.vx,vy:a.vy,speed:Math.hypot(a.vx,a.vy),age:o.age+1,hist:[],ev:e});
+            continue;
+          }
+        }
+      }
       const vx=o.vx*0.5+best.vx*0.5,vy=o.vy*0.5+best.vy*0.5;
-      next.push({blocks:best.blocks,cx:best.cx,cy:best.cy,vx,vy,speed:Math.hypot(vx,vy),age:o.age+1});
-    }else if(o.speed>tImp&&o.age>=2)impact(o);
+      next.push({blocks:best.blocks,cx:best.cx,cy:best.cy,vx,vy,speed:Math.hypot(vx,vy),age:o.age+1,hist,ev});
+    }else if((!ev||ev.t>0.35)&&o.hist.length>=3){
+      const b=avgV(o.hist.slice(-3));
+      if(Math.hypot(b.vx,b.vy)>tImp)impact({...o,vx:b.vx,vy:b.vy});
+    }
   }
-  for(const c of comps)if(!used.has(c))next.push({...c,age:0});
+  for(const c of comps)if(!used.has(c))next.push({...c,age:0,hist:[{vx:c.vx,vy:c.vy}],ev:null});
   live.objs=next;
 }
 
@@ -265,8 +479,9 @@ function boxBlur(a,W,H){
 
 function impact(o){
   const sp=Math.hypot(o.vx,o.vy);
-  if(sp<1e-6||!live.plate)return;
+  if(sp<1e-6||!live.plate)return null;
   const ax=o.vx/sp,ay=o.vy/sp,{bw,bh,W,H}=live;
+  for(const e of live.evs)if(e.t<0.3&&Math.hypot(e.qx-o.cx,e.qy-o.cy)<e.R*0.6)return null;
   let w=new Float32Array(bw*bh),best=-1e9,qx=o.cx,qy=o.cy,minx=1e9,maxx=-1e9,miny=1e9,maxy=-1e9;
   for(const j of o.blocks){
     const x=j%bw,y=(j-x)/bw,px=(x+0.5)*BF,py=(y+0.5)*BF;
@@ -277,25 +492,43 @@ function impact(o){
   }
   w=blur3(blur3(w,bw,bh),bw,bh);
   const fr=live.cur,pl=live.plate,spr=new Uint8ClampedArray(fr);
-  const raw=new Float32Array(W*H);
-  let cnt=0;
-  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-    if(w[Math.min(bh-1,y>>4)*bw+Math.min(bw-1,x>>4)]<0.05)continue;
+  const sx0=Math.max(0,Math.floor(minx-3*BF)),sy0=Math.max(0,Math.floor(miny-3*BF)),sx1=Math.min(W-1,Math.ceil(maxx+3*BF)),sy1=Math.min(H-1,Math.ceil(maxy+3*BF));
+  const diff=new Uint8Array(W*H),comp=new Uint8Array(W*H),stack=[];
+  for(let y=sy0;y<=sy1;y++)for(let x=sx0;x<=sx1;x++){
     const k=(y*W+x)*4;
-    const diff=Math.abs(fr[k]-pl[k])+Math.abs(fr[k+1]-pl[k+1])+Math.abs(fr[k+2]-pl[k+2]);
-    if(diff>DIFF){raw[y*W+x]=1;cnt++}
+    if(Math.abs(fr[k]-pl[k])+Math.abs(fr[k+1]-pl[k+1])+Math.abs(fr[k+2]-pl[k+2])>DIFF)diff[y*W+x]=1;
   }
-  let core=raw;
-  if(cnt<200){
-    core=new Float32Array(W*H);
-    for(let y=0;y<H;y++)for(let x=0;x<W;x++)core[y*W+x]=w[Math.min(bh-1,y>>4)*bw+Math.min(bw-1,x>>4)]>0.5?1:0;
+  let seeds=0;
+  for(let y=sy0;y<=sy1;y++)for(let x=sx0;x<=sx1;x++){
+    const i=y*W+x;
+    if(diff[i]&&w[Math.min(bh-1,(y/BF)|0)*bw+Math.min(bw-1,(x/BF)|0)]>0.3){comp[i]=1;stack.push(i);seeds++}
   }
-  const al=boxBlur(morph(core,W,H,2),W,H),pal=boxBlur(morph(core,W,H,5),W,H);
-  const bx0=Math.max(0,Math.floor(minx-BF)),by0=Math.max(0,Math.floor(miny-BF)),bx1=Math.min(W-1,Math.ceil(maxx+BF)),by1=Math.min(H-1,Math.ceil(maxy+BF));
-  const spn=sp*baseFps/60,g=+bounceEl.value/5;
-  live.evs.push({t:0,ax,ay,qx:qx+ax*BF*0.5,qy:qy+ay*BF*0.5,sq:Math.min(0.6,spn*0.05*g),tr:Math.min(35,spn*1.2*g),col:Math.min(30,spn*g),R:Math.max(80,(Math.max(maxx-minx,maxy-miny)+BF)*1.1),w,spr,al,pal,bx0,by0,bx1,by1});
+  let cnt=0,cminx=1e9,cmaxx=-1,cminy=1e9,cmaxy=-1;
+  while(stack.length){
+    const j=stack.pop(),x=j%W,y=(j-x)/W;
+    cnt++;
+    if(x<cminx)cminx=x;if(x>cmaxx)cmaxx=x;if(y<cminy)cminy=y;if(y>cmaxy)cmaxy=y;
+    if(x>sx0&&diff[j-1]&&!comp[j-1]){comp[j-1]=1;stack.push(j-1)}
+    if(x<sx1&&diff[j+1]&&!comp[j+1]){comp[j+1]=1;stack.push(j+1)}
+    if(y>sy0&&diff[j-W]&&!comp[j-W]){comp[j-W]=1;stack.push(j-W)}
+    if(y<sy1&&diff[j+W]&&!comp[j+W]){comp[j+W]=1;stack.push(j+W)}
+  }
+  const core=new Float32Array(W*H);
+  if(cnt<150){
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++)core[y*W+x]=w[Math.min(bh-1,(y/BF)|0)*bw+Math.min(bw-1,(x/BF)|0)]>0.5?1:0;
+    cminx=minx-BF/2;cmaxx=maxx+BF/2;cminy=miny-BF/2;cmaxy=maxy+BF/2;
+  }else{
+    for(let i=0;i<core.length;i++)core[i]=comp[i];
+  }
+  const al=boxBlur(morph(core,W,H,1),W,H),pal=boxBlur(morph(core,W,H,4),W,H);
+  const m=8,bx0=Math.max(0,Math.floor(cminx-m)),by0=Math.max(0,Math.floor(cminy-m)),bx1=Math.min(W-1,Math.ceil(cmaxx+m)),by1=Math.min(H-1,Math.ceil(cmaxy+m));
+  const size=Math.max(cmaxx-cminx,cmaxy-cminy)+BF;
+  const spn=sp*baseFps/60,g=+bounceEl.value/5,f=Math.min(1.5,Math.max(0.6,spn/5));
+  const e={t:0,ax,ay,qx:qx+ax*BF*0.5,qy:qy+ay*BF*0.5,ox:0,oy:0,cx0:o.cx,cy0:o.cy,sq:Math.min(0.85,0.5*f*g),tr:Math.min(120,Math.max(30,size*0.6)*f*g),col:Math.min(90,Math.max(25,size*0.45)*f*g),R:Math.max(100,size*2.2),w,spr,al,pal,bx0,by0,bx1,by1};
+  live.evs.push(e);
   if(live.evs.length>8)live.evs.shift();
   live.hits++;
+  return e;
 }
 
 function updatePlate(data){
@@ -335,17 +568,20 @@ function applyEvents(){
     }
   }
   for(let i=0;i<dx.length;i++){
-    dx[i]=Math.max(-60,Math.min(60,dx[i]));dy[i]=Math.max(-60,Math.min(60,dy[i]));
+    dx[i]=Math.max(-90,Math.min(90,dx[i]));dy[i]=Math.max(-90,Math.min(90,dy[i]));
   }
 }
 
 function patchEvents(dst){
-  const {W}=live,pl=live.plate;
+  const {W,H}=live,pl=live.plate;
   for(const e of live.evs){
+    const ox=Math.round(e.ox),oy=Math.round(e.oy);
     for(let y=e.by0;y<=e.by1;y++)for(let x=e.bx0;x<=e.bx1;x++){
-      const i=y*W+x,a=e.pal[i];
+      const dx=x+ox,dy=y+oy;
+      if(dx<0||dy<0||dx>=W||dy>=H)continue;
+      const a=e.pal[y*W+x];
       if(a<0.01)continue;
-      const k=i*4,b=1-a;
+      const k=(dy*W+dx)*4,b=1-a;
       dst[k]=dst[k]*b+pl[k]*a;dst[k+1]=dst[k+1]*b+pl[k+1]*a;dst[k+2]=dst[k+2]*b+pl[k+2]*a;
     }
   }
@@ -356,7 +592,7 @@ function drawSprites(o){
   for(const e of live.evs){
     const env=Math.exp(-e.t/tau),c=Math.cos(om*e.t)*env,s=Math.sin(om*e.t)*env;
     const sa=Math.max(0.3,1-e.sq*c),sp=1+0.5*e.sq*c,nx=-e.ay,ny=e.ax;
-    const tx=-e.ax*e.tr*s,ty=-e.ay*e.tr*s;
+    const tx=-e.ax*e.tr*s+e.ox,ty=-e.ay*e.tr*s+e.oy;
     let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
     for(const [cx,cy] of [[e.bx0,e.by0],[e.bx1,e.by0],[e.bx0,e.by1],[e.bx1,e.by1]]){
       const rx=cx-e.qx,ry=cy-e.qy,al=(rx*e.ax+ry*e.ay)*sa,pe=(rx*nx+ry*ny)*sp;
@@ -400,10 +636,17 @@ function warp(s,PX,PY,o,w,h){
 
 function liveFrame(){
   if(!live.on)return;
-  cam.requestVideoFrameCallback(liveFrame);
+  if(!live.demo)cam.requestVideoFrameCallback(liveFrame);
   const {W,H,bw,bh}=live;
-  lx.drawImage(cam,0,0,W,H);
-  const img=lx.getImageData(0,0,W,H);
+  let img;
+  if(live.demo){
+    demoStep(live.scene,1/60);
+    demoRender(live.scene,live.buf);
+    img={data:live.buf};
+  }else{
+    lx.drawImage(cam,0,0,W,H);
+    img=lx.getImageData(0,0,W,H);
+  }
   live.cur=img.data;
   const g=halfGray(img,W,H);
   if(live.pg){
@@ -429,6 +672,15 @@ function liveFrame(){
   }
 }
 
+demoBtn.onclick=()=>{
+  stopLive();
+  startLive(true);
+};
+livecv.onpointerdown=e=>{
+  if(!live.on)return;
+  const r=livecv.getBoundingClientRect();
+  impactAt((e.clientX-r.left)*live.W/r.width,(e.clientY-r.top)*live.H/r.height);
+};
 startBtn.onclick=async()=>{
   try{await openCamera()}catch(e){statusEl.textContent='Error: '+(e.message||e)}
 };
