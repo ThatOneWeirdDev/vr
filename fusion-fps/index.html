@@ -29,7 +29,7 @@ label.rng input{flex:1}
 <label class="rng"><span>Bounce</span><input type="range" id="bounce" min="1" max="10" value="5"></label>
 <label class="rng"><span>Wobble time</span><input type="range" id="wobble" min="3" max="20" value="9"></label>
 <button class="primary" id="start">Start camera</button>
-<div id="note">Live camera. When something moving suddenly stops, like a hand hitting a leg, the area keeps moving, springs back and ripples outward, over and over. It is a jelly-style approximation driven by motion estimation, not real physics. Hold the phone still for the best result.</div>
+<div id="note">Live camera. It finds moving objects, and when one suddenly stops, like a hand hitting a leg, it squashes and stretches like a cartoon and bounces back, while the spot it hit wobbles. Objects are found by motion only, not by recognizing what they are. Hold the phone still for the best result.</div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -37,9 +37,9 @@ const cam=$('cam'),statusEl=$('status'),startBtn=$('start'),livecv=$('livecv'),b
 const lctx=livecv.getContext('2d');
 const lcan=document.createElement('canvas');
 const lx=lcan.getContext('2d',{willReadFrequently:true});
-const BS=8,LIVE_W=480;
+const BS=8,BF=16,LIVE_W=480,MOVE=180,IMPACT=240;
 let stream=null,baseFps=30;
-const live={on:false,W:0,H:0,bw:0,bh:0,pg:null,dx:null,dy:null,ux:null,uy:null,pvx:null,pvy:null,od:null,frames:0,t0:0,hits:0};
+const live={on:false,W:0,H:0,bw:0,bh:0,pg:null,dx:null,dy:null,objs:[],evs:[],od:null,frames:0,t0:0,hits:0};
 
 function measureFps(ms){
   return new Promise(res=>{
@@ -151,7 +151,7 @@ function startLive(){
   livecv.width=W;livecv.height=H;
   lcan.width=W;lcan.height=H;
   const hw=W>>1,hh=H>>1,bw=Math.floor(hw/BS),bh=Math.floor(hh/BS),n=bw*bh;
-  Object.assign(live,{on:true,W,H,bw,bh,pg:null,dx:new Float32Array(n),dy:new Float32Array(n),ux:new Float32Array(n),uy:new Float32Array(n),pvx:new Float32Array(n),pvy:new Float32Array(n),od:new ImageData(W,H),frames:0,t0:performance.now(),hits:0});
+  Object.assign(live,{on:true,W,H,bw,bh,pg:null,dx:new Float32Array(n),dy:new Float32Array(n),objs:[],evs:[],od:new ImageData(W,H),frames:0,t0:performance.now(),hits:0});
   cam.classList.add('hide');
   livecv.hidden=false;
   cam.requestVideoFrameCallback(liveFrame);
@@ -163,36 +163,113 @@ function stopLive(){
   livecv.hidden=true;
 }
 
-function step(f){
-  const {bw,bh,dx,dy,ux,uy,pvx,pvy}=live,n=bw*bh;
-  const gain=+bounceEl.value*0.2;
-  const tau=+wobbleEl.value/10;
-  const w0=2*Math.PI*4.5/baseFps,k=w0*w0,c=2/(tau*baseFps),kn=0.2;
-  const sx=Float32Array.from(f.vx).sort(),sy=Float32Array.from(f.vy).sort();
-  const gx=sx[n>>1],gy=sy[n>>1];
+function components(f,gx,gy){
+  const {bw,bh,vx,vy}=f,n=bw*bh,thr=MOVE/baseFps;
+  const mov=new Uint8Array(n);
+  for(let i=0;i<n;i++)if(Math.hypot(vx[i]-gx,vy[i]-gy)>thr)mov[i]=1;
+  const seen=new Uint8Array(n),out=[];
   for(let i=0;i<n;i++){
-    const vx=f.vx[i]-gx,vy=f.vy[i]-gy;
-    const px=pvx[i],py=pvy[i],sp=Math.hypot(px,py);
-    if(sp>3){
-      const dec=-((vx-px)*px+(vy-py)*py)/sp;
-      if(dec>sp*0.6&&dec>2){
-        const m=Math.min(dec,14)*gain;
-        ux[i]+=px/sp*m;uy[i]+=py/sp*m;
-        live.hits++;
+    if(!mov[i]||seen[i])continue;
+    const stack=[i],blocks=[];
+    seen[i]=1;
+    while(stack.length){
+      const j=stack.pop(),x=j%bw,y=(j-x)/bw;
+      blocks.push(j);
+      if(x>0&&mov[j-1]&&!seen[j-1]){seen[j-1]=1;stack.push(j-1)}
+      if(x<bw-1&&mov[j+1]&&!seen[j+1]){seen[j+1]=1;stack.push(j+1)}
+      if(y>0&&mov[j-bw]&&!seen[j-bw]){seen[j-bw]=1;stack.push(j-bw)}
+      if(y<bh-1&&mov[j+bw]&&!seen[j+bw]){seen[j+bw]=1;stack.push(j+bw)}
+    }
+    if(blocks.length<3)continue;
+    let cx=0,cy=0,mx=0,my=0;
+    for(const j of blocks){
+      const x=j%bw,y=(j-x)/bw;
+      cx+=(x+0.5)*BF;cy+=(y+0.5)*BF;mx+=vx[j]-gx;my+=vy[j]-gy;
+    }
+    const k=blocks.length;
+    out.push({blocks,cx:cx/k,cy:cy/k,vx:mx/k,vy:my/k,speed:Math.hypot(mx/k,my/k)});
+  }
+  return out;
+}
+
+function blur3(w,bw,bh){
+  const o=new Float32Array(w.length);
+  for(let y=0;y<bh;y++)for(let x=0;x<bw;x++){
+    let s=0;
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      const xx=Math.min(Math.max(x+dx,0),bw-1),yy=Math.min(Math.max(y+dy,0),bh-1);
+      s+=w[yy*bw+xx];
+    }
+    o[y*bw+x]=s/9;
+  }
+  return o;
+}
+
+function impact(o){
+  const sp=Math.hypot(o.vx,o.vy);
+  if(sp<1e-6)return;
+  const ax=o.vx/sp,ay=o.vy/sp,{bw,bh}=live;
+  let w=new Float32Array(bw*bh),best=-1e9,qx=o.cx,qy=o.cy,minx=1e9,maxx=-1e9,miny=1e9,maxy=-1e9;
+  for(const j of o.blocks){
+    const x=j%bw,y=(j-x)/bw,px=(x+0.5)*BF,py=(y+0.5)*BF;
+    w[j]=1;
+    const pr=(px-o.cx)*ax+(py-o.cy)*ay;
+    if(pr>best){best=pr;qx=px;qy=py}
+    if(px<minx)minx=px;if(px>maxx)maxx=px;if(py<miny)miny=py;if(py>maxy)maxy=py;
+  }
+  w=blur3(blur3(w,bw,bh),bw,bh);
+  const spn=sp*baseFps/60,g=+bounceEl.value/5;
+  live.evs.push({t:0,cx:o.cx,cy:o.cy,ax,ay,qx:qx+ax*BF*0.5,qy:qy+ay*BF*0.5,sq:Math.min(0.6,spn*0.05*g),tr:Math.min(35,spn*1.2*g),col:Math.min(30,spn*g),R:Math.max(80,(Math.max(maxx-minx,maxy-miny)+BF)*1.1),w});
+  if(live.evs.length>8)live.evs.shift();
+  live.hits++;
+}
+
+function track(comps){
+  const tImp=IMPACT/baseFps,used=new Set(),next=[];
+  for(const o of live.objs){
+    let best=null,bd=1e9;
+    const rad=48+o.speed*3;
+    for(const c of comps){
+      if(used.has(c))continue;
+      const d=Math.hypot(c.cx-o.cx-o.vx,c.cy-o.cy-o.vy);
+      if(d<rad&&d<bd){bd=d;best=c}
+    }
+    if(best){
+      used.add(best);
+      if(o.speed>tImp&&best.speed<o.speed*0.35&&o.age>=2){impact(o);continue}
+      const vx=o.vx*0.5+best.vx*0.5,vy=o.vy*0.5+best.vy*0.5;
+      next.push({blocks:best.blocks,cx:best.cx,cy:best.cy,vx,vy,speed:Math.hypot(vx,vy),age:o.age+1});
+    }else if(o.speed>tImp&&o.age>=2)impact(o);
+  }
+  for(const c of comps)if(!used.has(c))next.push({...c,age:0});
+  live.objs=next;
+}
+
+function applyEvents(){
+  const {bw,bh,dx,dy}=live;
+  dx.fill(0);dy.fill(0);
+  const tau=+wobbleEl.value/10,om=2*Math.PI*4,dt=1/baseFps;
+  live.evs=live.evs.filter(e=>{e.t+=dt;return e.t<tau*4});
+  for(const e of live.evs){
+    const env=Math.exp(-e.t/tau),c=Math.cos(om*e.t)*env,s=Math.sin(om*e.t)*env;
+    const nx=-e.ay,ny=e.ax;
+    for(let y=0;y<bh;y++)for(let x=0;x<bw;x++){
+      const i=y*bw+x,px=(x+0.5)*BF,py=(y+0.5)*BF;
+      const w=e.w[i];
+      if(w>0.01){
+        const rx=px-e.cx,ry=py-e.cy,al=rx*e.ax+ry*e.ay,pe=rx*nx+ry*ny;
+        const a=-e.sq*c*al-e.tr*s,b=0.5*e.sq*c*pe;
+        dx[i]+=w*(a*e.ax+b*nx);dy[i]+=w*(a*e.ay+b*ny);
+      }
+      const r=Math.hypot(px-e.qx,py-e.qy)/e.R;
+      if(r<1){
+        const f=(1-r)*(1-r)*e.col*s;
+        dx[i]+=e.ax*f;dy[i]+=e.ay*f;
       }
     }
-    pvx[i]=px*0.5+vx*0.5;pvy[i]=py*0.5+vy*0.5;
   }
-  for(let y=0;y<bh;y++)for(let x=0;x<bw;x++){
-    const i=y*bw+x;
-    const l=x>0?i-1:i,r=x<bw-1?i+1:i,u=y>0?i-bw:i,d=y<bh-1?i+bw:i;
-    const lapx=(dx[l]+dx[r]+dx[u]+dx[d])*0.25-dx[i],lapy=(dy[l]+dy[r]+dy[u]+dy[d])*0.25-dy[i];
-    ux[i]+=-k*dx[i]-c*ux[i]+kn*lapx;
-    uy[i]+=-k*dy[i]-c*uy[i]+kn*lapy;
-  }
-  for(let i=0;i<n;i++){
-    dx[i]=Math.max(-40,Math.min(40,dx[i]+ux[i]));
-    dy[i]=Math.max(-40,Math.min(40,dy[i]+uy[i]));
+  for(let i=0;i<dx.length;i++){
+    dx[i]=Math.max(-60,Math.min(60,dx[i]));dy[i]=Math.max(-60,Math.min(60,dy[i]));
   }
 }
 
@@ -218,15 +295,20 @@ function liveFrame(){
   lx.drawImage(cam,0,0,W,H);
   const img=lx.getImageData(0,0,W,H);
   const g=halfGray(img,W,H);
-  if(live.pg)step(medianField(motionField(live.pg,g,W>>1,H>>1)));
+  if(live.pg){
+    const f=medianField(motionField(live.pg,g,W>>1,H>>1));
+    const sx=Float32Array.from(f.vx).sort(),sy=Float32Array.from(f.vy).sort(),m=sx.length>>1;
+    track(components(f,sx[m],sy[m]));
+  }
   live.pg=g;
+  applyEvents();
   const d=denseField({vx:live.dx,vy:live.dy,bw,bh},W,H);
   warp(img.data,d.PX,d.PY,live.od.data,W,H);
   lctx.putImageData(live.od,0,0);
   live.frames++;
   const now=performance.now();
   if(now-live.t0>=500){
-    statusEl.textContent='Live: '+(live.frames*1000/(now-live.t0)).toFixed(0)+' fps, camera '+baseFps+' fps, impacts '+live.hits+'.';
+    statusEl.textContent='Live: '+(live.frames*1000/(now-live.t0)).toFixed(0)+' fps, camera '+baseFps+' fps, objects '+live.objs.length+', impacts '+live.hits+'.';
     live.frames=0;live.hits=0;live.t0=now;
   }
 }
